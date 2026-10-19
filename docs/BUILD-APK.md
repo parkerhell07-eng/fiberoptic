@@ -10,18 +10,13 @@
 
 ---
 
-## روش ۱ — ساخت خودکار با GitHub Actions (نیازمند یک‌بار فعال‌سازی)
+## روش ۱ — ساخت خودکار با GitHub Actions (فعال است ✅)
 
-فایل ورک‌فلو در مخزن موجود است: [`docs/ci/build-apk.yml`](../docs/ci/build-apk.yml).
-چون توکن فعلی مجوز `Workflows` ندارد، برای فعال‌سازی CI یکی از دو راه زیر:
+ورک‌فلو در مخزن موجود و فعال است: [`.github/workflows/build-apk.yml`](../.github/workflows/build-apk.yml).
 
-**الف) از طریق وب (ساده‌ترین):**
-1. در GitHub به `Add file → Create new file` بروید و مسیر `.github/workflows/build-apk.yml` را بسازید
-2. محتوای `docs/ci/build-apk.yml` را کپی و Paste کنید → Commit
-3. تب Actions → ورک‌فلو **Build FiberKar Android APK** → Run workflow (یا پوش تگ `v*` → Release خودکار)
-
-**ب) با توکن دارای مجوز:** توکن Fine-grained با مجوزهای `Contents` + `Workflows` (Read & write) بسازید؛
-سپس کافی است `cp docs/ci/build-apk.yml .github/workflows/build-apk.yml && git add . && git push`.
+- **Release خودکار:** هر بار یک تگ `v*` (مثلاً `v1.0.2`) پوش شود، ورک‌فلو APK را می‌سازد و در GitHub Release منتشر می‌کند.
+- **ساخت دستی:** تب Actions → ورک‌فلو **Build FiberKar Android APK** → Run workflow.
+- **امضا در CI (اختیاری):** Secretهای زیر تنظیم شود تا APK خروجی Release همان امضای محلی را داشته باشد (اگر تنظیم نشود، APK امضاشده از قبل در Release موجود است).
 
 پس از پایان اجرا، از بخش **Artifacts** فایل APK را دانلود کنید:
 - `fiberkar-debug-apk` → `app-debug.apk` — قابل نصب مستقیم برای تست
@@ -31,8 +26,8 @@
 (`bun run build:cap`) → `bunx cap sync android` → `gradlew assembleDebug/Release` →
 امضای اختیاری با Secretها → آپلود آرتیفکت / Release.
 
-> ℹ️ توجه: Release نسخه ۱٫۰ از قبل با APK **امضاشده محلی** منتشر شده است:
-> <https://github.com/parkerhell07-eng/fiberoptic/releases/tag/v1.0>
+> ℹ️ توجه: Release نسخه ۱٫۰٫۱ (رفع مشکل کیبورد اندروید در فرم‌ها) با APK **امضاشده محلی** منتشر شده است:
+> <https://github.com/parkerhell07-eng/fiberoptic/releases/tag/v1.0.1>
 
 ### امضای خودکار در CI (اختیاری)
 

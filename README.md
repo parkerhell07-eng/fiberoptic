@@ -3,12 +3,14 @@
 **اپلیکیشن مدیریت پروژه‌های شبکه فیبر نوری — کاملاً فارسی، راست‌چین و آفلاین**
 برای تکنسین‌ها، مجریان و پیمانکاران فیبر نوری.
 
-![نسخه](https://img.shields.io/badge/نسخه-1.0.0-059669) ![حالت](https://img.shields.io/badge/داده‌ها-کاملاً%20محلی-059669) ![PWA](https://img.shields.io/badge/PWA-آماده%20نصب-059669)
+![نسخه](https://img.shields.io/badge/نسخه-1.0.1-059669) ![حالت](https://img.shields.io/badge/داده‌ها-کاملاً%20محلی-059669) ![PWA](https://img.shields.io/badge/PWA-آماده%20نصب-059669)
 
-### 📲 دانلود APK اندروید (نسخه ۱٫۰ — امضاشده)
+### 📲 دانلود APK اندروید (نسخه ۱٫۰٫۱ — امضاشده)
 
-**[دانلود از صفحه Releases](https://github.com/parkerhell07-eng/fiberoptic/releases/tag/v1.0)** —
-مستقیم: [`fiberkar-v1.0-release.apk`](https://github.com/parkerhell07-eng/fiberoptic/releases/download/v1.0/fiberkar-v1.0-release.apk)
+**[دانلود از صفحه Releases](https://github.com/parkerhell07-eng/fiberoptic/releases/tag/v1.0.1)** —
+مستقیم: [`fiberkar-v1.0.1-release.apk`](https://github.com/parkerhell07-eng/fiberoptic/releases/download/v1.0.1/fiberkar-v1.0.1-release.apk)
+
+> 🛠 نسخه ۱٫۰٫۱: رفع مشکل کیبورد اندروید در فرم‌ها — در نسخه ۱٫۰ تنظیم `captureInput` باعث می‌شد تایپ فارسی در برخی کیبوردها در فرم‌ها ثبت نشود؛ این تنظیم حذف شد. اگر نسخه ۱٫۰ را نصب دارید، همین فایل را روی آن نصب کنید (به‌روزرسانی درجا، بدون حذف داده‌ها).
 (پکیج `com.fiberkar.app` — Android 7+ — تنها مجوز INTERNET)
 
 ---
@@ -51,10 +53,10 @@ bunx tsc --noEmit  # بررسی تایپ
 
 ## 📱 برنامه اندرویدی (APK)
 
-**APK نسخه ۱٫۰ واقعاً ساخته و امضا شد** (Capacitor 8):
+**APK نسخه ۱٫۰٫۱ واقعاً ساخته و امضا شد** (Capacitor 8):
 
-- `download/fiberkar-v1.0-release.apk` — امضاشده، هم‌ترازشده (۵٫۲ MB) — قابل نصب مستقیم
-- `download/fiberkar-v1.0-debug.apk` — نسخه تست (۶٫۹ MB)
+- `download/fiberkar-v1.0.1-release.apk` — امضاشده، هم‌ترازشده (۵٫۲ MB) — قابل نصب مستقیم
+- `download/fiberkar-v1.0.1-debug.apk` — نسخه تست (۶٫۹ MB)
 - پکیج: `com.fiberkar.app` — Android 7+ (minSdk 24) — targetSdk 36
 - تنها مجوز: `INTERNET` — بدون دسترسی به مخاطبین/موقعیت/حافظه
 - داخل APK اشتراک‌گذاری PDF و ذخیره پشتیبان با پلاگین‌های بومی اندروید انجام می‌شود
