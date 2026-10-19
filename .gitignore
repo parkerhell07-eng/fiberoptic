@@ -62,3 +62,7 @@ server.log
 *.keystore
 *.jks
 *.idsig
+
+# ورک‌فلو CI فعلاً در docs/ci نگهداری می‌شود (توکن فعلی مجوز Workflows ندارد)
+# برای فعال‌سازی CI: این خط را حذف و محتوای docs/ci/build-apk.yml را در .github/workflows/ کامیت کنید
+/.github/
