@@ -281,3 +281,24 @@ Work Log:
 Stage Summary:
 - Fix is a config revert to Capacitor defaults; controlled React inputs work normally with standard Android IME. Cannot run Android emulator in sandbox → final on-device confirmation pending user install of v1.0.1.
 - If user still sees the bug after v1.0.1: next step would be hardening forms (uncontrolled inputs + FormData read at save).
+
+---
+Task ID: 9
+Agent: orchestrator (Z.ai Code)
+Task: Push v1.0.1 (keyboard fix) + activate CI with new user token.
+
+Work Log:
+- New token arrived (classic, scopes: repo + workflow). Stored ONLY in /tmp/fk_gh_token (chmod 600); injected via runtime credential-helper variable — never in files/logs/history.
+- README.md: version badge + download links updated to v1.0.1; added in-place update note (same signature → data preserved) and changelog of the keyboard fix.
+- CI activated: docs/ci/build-apk.yml moved back to .github/workflows/build-apk.yml (git detected 100% rename); /.github/ removed from .gitignore; docs/BUILD-APK.md rewritten to "CI active" state (v* tag → auto Release; manual Run workflow; optional signing Secrets).
+- bun run lint → 0 errors. Committed 93ea149; pushed main (e741c0e..93ea149) including the keyboard fix commit 104c78c.
+- Release v1.0.1 created via API (id 417562723) with Persian release notes; uploaded BOTH APKs (state=uploaded verified):
+  - fiberkar-v1.0.1-release.apk (5,191,073 B, sha256 7b587b85…)
+  - fiberkar-v1.0.1-debug.apk (6,864,178 B, sha256 cd206d34…)
+- Public download verified: HTTP 302→200, content-length matches local file exactly.
+- Token file deleted; `git log -S` for token strings → empty (history clean).
+- Web E2E re-check of the reported flow (profiles → add → fill → save) on dev build → PASS (toast «با موفقیت ذخیره شد», record persisted).
+
+Stage Summary:
+- Live: main pushed with v1.0.1 fix; CI ACTIVE (workflow in .github/workflows); Release https://github.com/parkerhell07-eng/fiberoptic/releases/tag/v1.0.1 with signed APKs.
+- Device confirmation pending: user installs v1.0.1 over v1.0 (same key, in-place update). If any form issue persists, next hardening step = uncontrolled inputs + FormData read at save.
