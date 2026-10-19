@@ -134,7 +134,8 @@ function ProjectEditDialog({
 }: {
   open: boolean
   onOpenChange: (open: boolean) => void
-  editing: Project
+  /** اسنپ‌شات پروژه در زمان بازشدن — هرگز آبجکت زنده liveQuery نیست */
+  editing: Project | null
 }) {
   const [form, setForm] = React.useState<ProjectFormValues>(EMPTY_PROJECT_FORM)
   const [errors, setErrors] = React.useState<{ name?: string; client?: string }>({})
@@ -146,20 +147,19 @@ function ProjectEditDialog({
   }, [])
 
   React.useEffect(() => {
-    if (open) {
-      setForm({
-        name: editing.name,
-        code: editing.code,
-        client: editing.client,
-        area: editing.area,
-        startDate: editing.startDate,
-        status: editing.status,
-        contractorProfileId: editing.contractorProfileId,
-        executorProfileId: editing.executorProfileId,
-        description: editing.description,
-      })
-      setErrors({})
-    }
+    if (!open || !editing) return
+    setForm({
+      name: editing.name,
+      code: editing.code,
+      client: editing.client,
+      area: editing.area,
+      startDate: editing.startDate,
+      status: editing.status,
+      contractorProfileId: editing.contractorProfileId,
+      executorProfileId: editing.executorProfileId,
+      description: editing.description,
+    })
+    setErrors({})
   }, [open, editing])
 
   function set<K extends keyof ProjectFormValues>(key: K, value: ProjectFormValues[K]) {
@@ -202,6 +202,14 @@ function ProjectEditDialog({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent dir="rtl" className="max-w-lg">
+        <form
+          id="project-edit-form"
+          onSubmit={(e) => {
+            e.preventDefault()
+            handleSave()
+          }}
+          className="flex flex-col gap-4"
+        >
         <DialogHeader>
           <DialogTitle>ویرایش پروژه</DialogTitle>
           <DialogDescription>اطلاعات پروژه را ویرایش کنید؛ فیلدهای ستاره‌دار الزامی هستند.</DialogDescription>
@@ -277,13 +285,14 @@ function ProjectEditDialog({
           </Field>
         </div>
         <DialogFooter className="flex-row justify-start gap-2">
-          <Button onClick={handleSave} disabled={saving} className="min-h-11 flex-1">
+          <Button type="submit" form="project-edit-form" disabled={saving} className="min-h-11 flex-1">
             {saving ? 'در حال ذخیره…' : 'ذخیره'}
           </Button>
-          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={saving} className="min-h-11 flex-1">
+          <Button variant="outline" type="button" onClick={() => onOpenChange(false)} disabled={saving} className="min-h-11 flex-1">
             انصراف
           </Button>
         </DialogFooter>
+        </form>
       </DialogContent>
     </Dialog>
   )
@@ -349,6 +358,14 @@ function RouteFormDialog({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent dir="rtl" className="max-w-lg">
+        <form
+          id="route-form"
+          onSubmit={(e) => {
+            e.preventDefault()
+            handleSave()
+          }}
+          className="flex flex-col gap-4"
+        >
         <DialogHeader>
           <DialogTitle>{editing ? 'ویرایش مسیر' : 'مسیر جدید'}</DialogTitle>
           <DialogDescription>مسیر شبکه را تعریف کنید؛ هر مسیر می‌تواند چند باکس داشته باشد.</DialogDescription>
@@ -381,13 +398,14 @@ function RouteFormDialog({
           </Field>
         </div>
         <DialogFooter className="flex-row justify-start gap-2">
-          <Button onClick={handleSave} disabled={saving} className="min-h-11 flex-1">
+          <Button type="submit" form="route-form" disabled={saving} className="min-h-11 flex-1">
             {saving ? 'در حال ذخیره…' : 'ذخیره'}
           </Button>
-          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={saving} className="min-h-11 flex-1">
+          <Button variant="outline" type="button" onClick={() => onOpenChange(false)} disabled={saving} className="min-h-11 flex-1">
             انصراف
           </Button>
         </DialogFooter>
+        </form>
       </DialogContent>
     </Dialog>
   )
@@ -494,6 +512,14 @@ function BoxFormDialog({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent dir="rtl" className="max-w-lg">
+        <form
+          id="box-form"
+          onSubmit={(e) => {
+            e.preventDefault()
+            handleSave()
+          }}
+          className="flex flex-col gap-4"
+        >
         <DialogHeader>
           <DialogTitle>{editing ? 'ویرایش باکس' : 'باکس جدید'}</DialogTitle>
           <DialogDescription>مشخصات باکس فیبر را وارد کنید؛ شماره باکس و مسیر الزامی هستند.</DialogDescription>
@@ -571,13 +597,14 @@ function BoxFormDialog({
           </Field>
         </div>
         <DialogFooter className="flex-row justify-start gap-2">
-          <Button onClick={handleSave} disabled={saving} className="min-h-11 flex-1">
+          <Button type="submit" form="box-form" disabled={saving} className="min-h-11 flex-1">
             {saving ? 'در حال ذخیره…' : 'ذخیره'}
           </Button>
-          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={saving} className="min-h-11 flex-1">
+          <Button variant="outline" type="button" onClick={() => onOpenChange(false)} disabled={saving} className="min-h-11 flex-1">
             انصراف
           </Button>
         </DialogFooter>
+        </form>
       </DialogContent>
     </Dialog>
   )
@@ -631,6 +658,7 @@ type ProjectTab = 'summary' | 'routes' | 'boxes' | 'operations' | 'photos'
 export default function ProjectDetailView() {
   const params = useAppStore((s) => s.params)
   const navigate = useAppStore((s) => s.navigate)
+  const replace = useAppStore((s) => s.replace)
   const back = useAppStore((s) => s.back)
   const projectId = params.projectId
 
@@ -665,6 +693,8 @@ export default function ProjectDetailView() {
   // وضعیت‌های محلی
   const [tab, setTab] = React.useState<ProjectTab>('summary')
   const [projectDialogOpen, setProjectDialogOpen] = React.useState(false)
+  // اسنپ‌شات پروژه در زمان بازشدن فرم ویرایش (رکورد زنده liveQuery به فرم داده نمی‌شود)
+  const [editingProject, setEditingProject] = React.useState<Project | null>(null)
   const [routeDialogOpen, setRouteDialogOpen] = React.useState(false)
   const [editingRoute, setEditingRoute] = React.useState<Route | null>(null)
   const [routeDeleteTarget, setRouteDeleteTarget] = React.useState<Route | null>(null)
@@ -720,7 +750,8 @@ export default function ProjectDetailView() {
       await deleteProjectCascade(projectId)
       toast.success(messages.deleted)
       setProjectDeleteOpen(false)
-      navigate('projects')
+      // replace: Back نباید به پروژه حذف‌شده برگردد
+      replace('projects')
     } catch {
       toast.error(messages.error)
     } finally {
@@ -771,7 +802,10 @@ export default function ProjectDetailView() {
               <FileDown className="size-4" />
               گزارش PDF
             </Button>
-            <Button variant="outline" size="icon" className="size-11" aria-label="ویرایش پروژه" onClick={() => setProjectDialogOpen(true)}>
+            <Button variant="outline" size="icon" className="size-11" aria-label="ویرایش پروژه" onClick={() => {
+              setEditingProject(project)
+              setProjectDialogOpen(true)
+            }}>
               <Pencil className="size-4" />
             </Button>
             <Button
@@ -1057,7 +1091,7 @@ export default function ProjectDetailView() {
       )}
 
       {/* ---------- دیالوگ‌ها ---------- */}
-      <ProjectEditDialog open={projectDialogOpen} onOpenChange={setProjectDialogOpen} editing={project} />
+      <ProjectEditDialog open={projectDialogOpen} onOpenChange={setProjectDialogOpen} editing={editingProject} />
       <RouteFormDialog
         open={routeDialogOpen}
         onOpenChange={setRouteDialogOpen}

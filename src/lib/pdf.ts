@@ -1,10 +1,22 @@
 // فایبرکار — تولید گزارش PDF فارسی و راست‌چین
 // روش: رندر HTML در مرورگر (اتصال صحیح حروف فارسی) → html2canvas-pro → jsPDF
-// تمام استایل‌ها inline با رنگ‌های hex هستند تا رندر پایدار باشد.
+//
+// ⚠️ هشدار طراحی (هرگز نقض نشود):
+// تمام نودهای DOMِ «گزارش» باید فقط استایل INLINE با رنگ HEX داشته باشند
+// (الگوی C = {...} و base = '...' در پایین فایل). هرگز کلاس Tailwind یا
+// متغیر CSS (رنگ oklch) روی نودهای گزارش استفاده نشود — html2canvas-pro
+// روی oklch خطای parse می‌دهد و رندر سیاه/خراب می‌شود.
+//
+// معماری صفحه‌بندی:
+//  - هر جدول به «سرستون + ردیف‌های مستقل» شکسته می‌شود (بلوک به بلوک) تا
+//    جدول‌های بلندتر از یک صفحه هرگز بریده نشوند؛ در شکستن صفحه، سرستونِ
+//    همان جدول (tableId) دوباره در بالای صفحه جدید رندر می‌شود.
+//  - در هر لحظه فقط «یک صفحه» در DOM سوار می‌شود (جلوگیری از OOM اندروید؛
+//    html2canvas-pro کل سند را برای هر صفحه کلون می‌کند).
 import { jsPDF } from 'jspdf'
 import html2canvas from 'html2canvas-pro'
 import type { Box, DropCable, Fusion, Operation, Photo, PowerTest, Profile, Project, Route } from './types'
-import { db } from './localdb'
+import { db, getPhotoBlob } from './localdb'
 import {
   boxStatusLabels,
   deliveryStatusLabels,
@@ -16,9 +28,17 @@ import {
   powerUnitLabels,
   projectStatusLabels,
 } from './labels'
-import { computeConsumed, formatJalali, formatJalaliDateTime, formatMeters, formatNum, toFa } from './persian'
+import {
+  adaptiveNum,
+  computeConsumed,
+  formatJalali,
+  formatJalaliDateTime,
+  formatMeters,
+  formatNum,
+  toFa,
+} from './persian'
 import { blobToReportDataUrl } from './images'
-import { isNativeApp, nativeShareOrSaveFile } from './native-bridge'
+import { isNativeApp, nativeShareOrSaveFile, sanitizeFileName } from './native-bridge'
 
 export interface ReportSections {
   info: boolean
@@ -31,12 +51,26 @@ export interface ReportSections {
   photos: boolean
 }
 
+/** فازهای واقعی پیشرفت تولید گزارش */
+export type ReportProgressPhase = 'photos' | 'measure' | 'pages'
+
+export interface ReportProgress {
+  phase: ReportProgressPhase
+  done: number
+  total: number
+}
+
 export interface ReportOptions {
   projectId: string
   mode: 'summary' | 'full'
   sections: ReportSections
   photoIds?: string[] // در صورت انتخاب، فقط این عکس‌ها
-  onProgress?: (done: number, total: number) => void
+  onProgress?: (p: ReportProgress) => void
+}
+
+export interface GeneratedReport {
+  blob: Blob
+  pages: number
 }
 
 export const defaultSections: ReportSections = {
@@ -72,6 +106,7 @@ function esc(s: string | undefined | null): string {
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
 }
 
 function dash(s: string | undefined | null): string {
@@ -80,10 +115,23 @@ function dash(s: string | undefined | null): string {
 }
 
 // ---------- بلوک‌های محتوایی ----------
-type Block = { html: string }
+/**
+ * بلوک = واحد صفحه‌بندی.
+ *  - tableId: ردیف/سرستون یک جدول شکستنی — هنگام سرریز به صفحه جدید،
+ *    سرستون همان tableId دوباره در بالای صفحه رندر می‌شود.
+ *  - isTableHeader: این بلوک خودِ سرستون است (دوباره تکرار نمی‌شود).
+ *  - keepWithNext: تیتر بخش/سرستون — تنها در انتهای صفحه رها نمی‌شود.
+ */
+interface Block {
+  html: string
+  tableId?: string
+  isTableHeader?: boolean
+  keepWithNext?: boolean
+}
 
 function sectionTitle(text: string, count?: number): Block {
   return {
+    keepWithNext: true,
     html: `<div style="${base}display:flex;align-items:center;gap:8px;margin:18px 0 8px 0;">
       <div style="width:6px;height:20px;background:${C.accent};border-radius:3px;"></div>
       <div style="font-size:15px;font-weight:700;color:${C.accent};">${esc(text)}</div>
@@ -107,25 +155,28 @@ function kvTable(rows: Array<[string, string]>): Block {
   }
 }
 
-function dataTable(headers: string[], rows: string[][], zebra = true): Block {
-  return {
-    html: `<table style="${base}width:100%;border-collapse:collapse;font-size:10.5px;">
-      <thead><tr>${headers
-        .map(
-          (h) =>
-            `<th style="border:1px solid ${C.border};background:${C.accent};color:#ffffff;padding:6px 8px;font-weight:600;text-align:right;white-space:nowrap;">${esc(h)}</th>`
-        )
-        .join('')}</tr></thead>
-      <tbody>${rows
-        .map(
-          (r, i) =>
-            `<tr style="background:${zebra && i % 2 ? C.zebra : '#ffffff'};">${r
-              .map((c) => `<td style="border:1px solid ${C.border};padding:5px 8px;">${c}</td>`)
-              .join('')}</tr>`
-        )
-        .join('')}</tbody>
-    </table>`,
-  }
+/** HTML سرستون جدول شکستنی (عرض‌ها درصدی؛ layout ثابت برای تراز ستون‌ها بین ردیف‌ها) */
+function tableHeaderHtml(headers: string[], widths: number[]): string {
+  return `<table style="${base}width:100%;table-layout:fixed;border-collapse:collapse;font-size:10.5px;">
+    <tr>${headers
+      .map(
+        (h, i) =>
+          `<th style="border:1px solid ${C.border};background:${C.accent};color:#ffffff;padding:6px 8px;font-weight:600;text-align:right;width:${widths[i] ?? 10}%;overflow-wrap:anywhere;">${esc(h)}</th>`
+      )
+      .join('')}</tr>
+  </table>`
+}
+
+/** HTML یک ردیف جدول شکستنی — margin-top:-1px حاشیه ردیف قبلی را پوشش می‌دهد تا جدول پیوسته دیده شود */
+function tableRowHtml(cells: string[], widths: number[], bg: string): string {
+  return `<table style="${base}width:100%;table-layout:fixed;border-collapse:collapse;font-size:10.5px;margin-top:-1px;">
+    <tr style="background:${bg};">${cells
+      .map(
+        (c, i) =>
+          `<td style="border:1px solid ${C.border};padding:5px 8px;width:${widths[i] ?? 10}%;overflow-wrap:anywhere;">${c}</td>`
+      )
+      .join('')}</tr>
+  </table>`
 }
 
 function paragraph(text: string): Block {
@@ -144,7 +195,7 @@ function emptyHint(text: string): Block {
 
 function photoBlock(dataUrl: string, title: string, caption: string, w: number, h: number): Block {
   const maxH = 300
-  const ratio = Math.min(1, maxH / h)
+  const ratio = Math.min(1, maxH / Math.max(1, h))
   const ph = Math.round(h * ratio)
   return {
     html: `<div style="${base}margin:10px 0;text-align:center;">
@@ -170,21 +221,76 @@ function statsRow(items: Array<{ label: string; value: string }>): Block {
   }
 }
 
+/** پاراگراف‌های بلند — شکست روی مرز کلمه (نه برش ثابت کاراکتری) */
 function longParagraphs(text: string, chunk = 900): Block[] {
   const t = String(text ?? '').trim()
   if (!t) return []
   if (t.length <= chunk) return [paragraph(t)]
+  const words = t.split(/\s+/)
   const out: Block[] = []
-  for (let i = 0; i < t.length; i += chunk) out.push(paragraph(t.slice(i, i + chunk)))
+  let cur = ''
+  for (const w of words) {
+    if (cur && cur.length + 1 + w.length > chunk) {
+      out.push(paragraph(cur))
+      cur = w
+    } else {
+      cur = cur ? `${cur} ${w}` : w
+    }
+  }
+  if (cur) out.push(paragraph(cur))
   return out
 }
 
 // ---------- ساخت محتوا ----------
-async function buildBlocks(opts: ReportOptions, data: ReportData): Promise<Block[]> {
-  const { project, routes, boxes, operations, fusions, powerTests, dropCables, photos, profiles } = data
+interface ReportData {
+  project: Project
+  routes: Route[]
+  boxes: Box[]
+  operations: Operation[]
+  fusions: Fusion[]
+  powerTests: PowerTest[]
+  dropCables: DropCable[]
+  photos: Photo[] // عکس‌های نهایی انتخاب‌شده برای درج
+  allPhotosCount: number // کل عکس‌های پروژه (برای آمار واقعی)
+  missingSelected: number // تعداد عکس‌های انتخابی که دیگر وجود ندارند
+  profiles: Profile[]
+  routeNameById: Map<string, string>
+  boxLabelById: Map<string, string>
+}
+
+async function buildBlocks(
+  opts: ReportOptions,
+  data: ReportData
+): Promise<{ blocks: Block[]; headerOf: Map<string, { block: Block; index: number }> }> {
+  const { project, routes, boxes, operations, fusions, powerTests, dropCables, photos, allPhotosCount, missingSelected, profiles } = data
   const mode = opts.mode
+  const full = mode === 'full'
   const blocks: Block[] = []
   const show = opts.sections
+  const headerOf = new Map<string, { block: Block; index: number }>()
+
+  // جدول شکستنی: سرستون + ردیف‌ها به‌صورت بلوک‌های مستقل (C1)
+  const dataTableBlocks = (tableId: string, headers: string[], widths: number[], rows: string[][], zebra = true): void => {
+    const header: Block = { html: tableHeaderHtml(headers, widths), tableId, isTableHeader: true, keepWithNext: true }
+    headerOf.set(tableId, { block: header, index: blocks.length })
+    blocks.push(header)
+    rows.forEach((cells, i) => {
+      blocks.push({ html: tableRowHtml(cells, widths, zebra && i % 2 ? C.zebra : '#ffffff'), tableId })
+    })
+  }
+
+  // نام‌ها از Map — بدون find در هر ردیف (H3)
+  const routeCell = (routeId?: string): string => (routeId ? dash(data.routeNameById.get(routeId)) : '—')
+  const boxCell = (boxId?: string): string => (boxId ? dash(data.boxLabelById.get(boxId)) : '—')
+  /** ستون ترکیبی «مسیر / باکس» برای فیوژن و تست توان */
+  const ctxCell = (routeId?: string, boxId?: string): string => {
+    const parts: string[] = []
+    const rn = routeId ? data.routeNameById.get(routeId) : undefined
+    const bn = boxId ? data.boxLabelById.get(boxId) : undefined
+    if (rn && rn.trim() !== '') parts.push(esc(rn))
+    if (bn && bn.trim() !== '') parts.push(esc(bn))
+    return parts.length > 0 ? parts.join(' / ') : '—'
+  }
 
   // سرصفحه گزارش
   blocks.push({
@@ -209,7 +315,7 @@ async function buildBlocks(opts: ReportOptions, data: ReportData): Promise<Block
       ['وضعیت', projectStatusLabels[project.status]],
       ['تاریخ شروع', project.startDate ? formatJalali(project.startDate) : '—'],
     ]
-    if (mode === 'full') {
+    if (full) {
       if (contractor) infoRows.push(['پیمانکار', dash(`${contractor.firstName} ${contractor.lastName}`)])
       if (executor) infoRows.push(['مجری', dash(`${executor.firstName} ${executor.lastName}`)])
     }
@@ -237,144 +343,252 @@ async function buildBlocks(opts: ReportOptions, data: ReportData): Promise<Block
             }, 0)
           ).replace(' متر', ''),
         },
-        { label: 'عکس‌ها', value: toFa(photos.length) },
+        // آمار «عکس‌ها» همیشه کل عکس‌های پروژه است، نه فقط درج‌شده‌ها (M4)
+        { label: 'عکس‌ها', value: toFa(allPhotosCount) },
       ])
     )
   }
 
-  // مسیرها
+  // مسیرها — در حالت خلاصه ستون «—» بدون داده حذف می‌شود (M3)
   if (show.routes) {
     blocks.push(sectionTitle('مسیرهای شبکه', routes.length))
-    if (routes.length === 0) blocks.push(emptyHint('مسیری برای این پروژه ثبت نشده است.'))
-    else
-      blocks.push(
-        dataTable(
-          ['نام مسیر', 'کد', mode === 'full' ? 'توضیحات' : '—'],
-          routes.map((r) => [dash(r.name), dash(r.code), mode === 'full' ? dash(r.description) : ''])
-        )
+    if (routes.length === 0) {
+      blocks.push(emptyHint('مسیری برای این پروژه ثبت نشده است.'))
+    } else if (full) {
+      dataTableBlocks(
+        'routes',
+        ['نام مسیر', 'کد', 'توضیحات'],
+        [32, 20, 48],
+        routes.map((r) => [dash(r.name), dash(r.code), dash(r.description)])
       )
-  }
-
-  // باکس‌ها
-  if (show.boxes) {
-    blocks.push(sectionTitle('باکس‌ها', boxes.length))
-    if (boxes.length === 0) blocks.push(emptyHint('باکسی برای این پروژه ثبت نشده است.'))
-    else {
-      const routeName = (id?: string) => dash(routes.find((r) => r.id === id)?.name)
-      blocks.push(
-        dataTable(
-          ['شماره باکس', 'مسیر', 'محل نصب', 'مشخصات کابل', 'وضعیت', ...(mode === 'full' ? ['توضیحات'] : [])],
-          boxes.map((b: Box) => [
-            dash(b.number),
-            routeName(b.routeId),
-            dash(b.location),
-            dash(b.cableSpec),
-            boxStatusLabels[b.status],
-            ...(mode === 'full' ? [dash(b.description)] : []),
-          ])
-        )
+    } else {
+      dataTableBlocks(
+        'routes',
+        ['نام مسیر', 'کد'],
+        [62, 38],
+        routes.map((r) => [dash(r.name), dash(r.code)])
       )
     }
   }
 
-  // عملیات
+  // باکس‌ها — مرتب‌شده بر اساس مسیر و شماره طبیعی (H3)
+  if (show.boxes) {
+    blocks.push(sectionTitle('باکس‌ها', boxes.length))
+    if (boxes.length === 0) {
+      blocks.push(emptyHint('باکسی برای این پروژه ثبت نشده است.'))
+    } else {
+      if (full) {
+        dataTableBlocks(
+          'boxes',
+          ['شماره باکس', 'مسیر', 'محل نصب', 'ظرفیت', 'مشخصات کابل', 'وضعیت', 'توضیحات'],
+          [11, 15, 18, 10, 19, 9, 18],
+          boxes.map((b: Box) => [
+            dash(b.number),
+            routeCell(b.routeId),
+            dash(b.location),
+            dash(b.capacity), // M5: ظرفیت
+            dash(b.cableSpec),
+            boxStatusLabels[b.status],
+            dash(b.description),
+          ])
+        )
+      } else {
+        dataTableBlocks(
+          'boxes',
+          ['شماره باکس', 'مسیر', 'محل نصب', 'مشخصات کابل', 'وضعیت'],
+          [14, 20, 25, 25, 16],
+          boxes.map((b: Box) => [
+            dash(b.number),
+            routeCell(b.routeId),
+            dash(b.location),
+            dash(b.cableSpec),
+            boxStatusLabels[b.status],
+          ])
+        )
+      }
+    }
+  }
+
+  // عملیات — مرتب‌شده بر اساس زمان ثبت (H3)
   if (show.operations) {
     blocks.push(sectionTitle('عملیات اجرایی', operations.length))
-    if (operations.length === 0) blocks.push(emptyHint('عملیاتی ثبت نشده است.'))
-    else {
-      blocks.push(
-        dataTable(
-          ['عنوان', 'نوع', 'تاریخ', 'مسئول', 'وضعیت', ...(mode === 'full' ? ['توضیحات'] : [])],
+    if (operations.length === 0) {
+      blocks.push(emptyHint('عملیاتی ثبت نشده است.'))
+    } else {
+      if (full) {
+        dataTableBlocks(
+          'operations',
+          ['عنوان', 'نوع', 'تاریخ', 'مسئول', 'نقش مسئول', 'وضعیت', 'توضیحات'],
+          [20, 14, 12, 20, 13, 9, 12],
+          operations.map((o: Operation) => [
+            dash(o.title),
+            o.type === 'custom' && o.customTypeLabel ? dash(o.customTypeLabel) : operationTypeLabels[o.type],
+            formatJalali(o.date),
+            dash(o.assigneeName),
+            dash(o.assigneeRole), // M5: نقش مسئول
+            operationStatusLabels[o.status],
+            dash(o.description),
+          ])
+        )
+      } else {
+        dataTableBlocks(
+          'operations',
+          ['عنوان', 'نوع', 'تاریخ', 'مسئول', 'وضعیت'],
+          [24, 17, 14, 27, 18],
           operations.map((o: Operation) => [
             dash(o.title),
             o.type === 'custom' && o.customTypeLabel ? dash(o.customTypeLabel) : operationTypeLabels[o.type],
             formatJalali(o.date),
             dash(o.assigneeName),
             operationStatusLabels[o.status],
-            ...(mode === 'full' ? [dash(o.description)] : []),
           ])
         )
-      )
-      if (mode === 'full')
+      }
+      if (full)
         for (const o of operations) {
           if (o.techSpecs) blocks.push(...longParagraphs(`مشخصات فنی «${o.title}»: ${o.techSpecs}`))
         }
     }
   }
 
-  // فیوژن‌ها
+  // فیوژن‌ها — مرتب‌شده بر اساس زمان ثبت (H3)؛ حالت کامل: مسیر/باکس و توضیحات (M5)
   if (show.fusions) {
     blocks.push(sectionTitle('فیوژن', fusions.length))
-    if (fusions.length === 0) blocks.push(emptyHint('اتصال فیوژنی ثبت نشده است.'))
-    else
-      blocks.push(
-        dataTable(
-          ['شناسه اتصال', 'شماره تارها', 'تیوب', 'مشخصات کابل', 'دستگاه', 'نتیجه ثبت‌شده', 'تاریخ'],
-          fusions.map((f: Fusion) => [
-            dash(f.connectionId),
-            dash(f.fiberNumbers),
-            dash(f.tubeNumber),
-            dash(f.cableSpec),
-            f.deviceModel ? dash(f.deviceModel) : '—',
-            dash(f.result),
-            formatJalali(f.fusionDate),
-          ])
-        )
+    if (fusions.length === 0) {
+      blocks.push(emptyHint('اتصال فیوژنی ثبت نشده است.'))
+    } else if (full) {
+      dataTableBlocks(
+        'fusions',
+        ['شناسه اتصال', 'مسیر / باکس', 'شماره تارها', 'تیوب', 'مشخصات کابل', 'دستگاه', 'نتیجه ثبت‌شده', 'توضیحات', 'تاریخ'],
+        [13, 14, 10, 6, 13, 11, 15, 10, 8],
+        fusions.map((f: Fusion) => [
+          dash(f.connectionId),
+          ctxCell(f.routeId, f.boxId),
+          dash(f.fiberNumbers),
+          dash(f.tubeNumber),
+          dash(f.cableSpec),
+          f.deviceModel ? dash(f.deviceModel) : '—',
+          dash(f.result),
+          dash(f.description),
+          formatJalali(f.fusionDate),
+        ])
       )
+    } else {
+      dataTableBlocks(
+        'fusions',
+        ['شناسه اتصال', 'شماره تارها', 'تیوب', 'مشخصات کابل', 'دستگاه', 'نتیجه ثبت‌شده', 'تاریخ'],
+        [16, 12, 8, 18, 14, 20, 12],
+        fusions.map((f: Fusion) => [
+          dash(f.connectionId),
+          dash(f.fiberNumbers),
+          dash(f.tubeNumber),
+          dash(f.cableSpec),
+          f.deviceModel ? dash(f.deviceModel) : '—',
+          dash(f.result),
+          formatJalali(f.fusionDate),
+        ])
+      )
+    }
     blocks.push(note('نتیجه فیوژن صرفاً همان مقداری است که در محل ثبت شده است؛ هیچ مقدار ساختگی درج نمی‌شود.'))
   }
 
-  // تست توان
+  // تست توان — مرتب‌شده بر اساس زمان ثبت (H3)؛ mW با adaptiveNum تا مقدار کوچک فابسی نشود (H6)
   if (show.powerTests) {
     blocks.push(sectionTitle('تست توان', powerTests.length))
-    if (powerTests.length === 0) blocks.push(emptyHint('تست توانی ثبت نشده است.'))
-    else
-      blocks.push(
-        dataTable(
-          ['محل تست', 'مقدار ثبت‌شده', 'واحد', 'طول موج', 'دستگاه', 'مسئول', 'تاریخ'],
-          powerTests.map((t: PowerTest) => [
-            dash(t.location),
-            formatNum(t.value, 2),
-            powerUnitLabels[t.unit],
-            t.wavelengthNm !== undefined ? `${toFa(t.wavelengthNm)} nm` : '—',
-            dash(t.deviceModel),
-            dash(t.assigneeName),
-            formatJalali(t.date),
-          ])
-        )
+    const valueCell = (t: PowerTest): string => (t.unit === 'mW' ? adaptiveNum(t.value) : formatNum(t.value, 2))
+    if (powerTests.length === 0) {
+      blocks.push(emptyHint('تست توانی ثبت نشده است.'))
+    } else if (full) {
+      dataTableBlocks(
+        'powerTests',
+        ['محل تست', 'مسیر / باکس', 'مقدار ثبت‌شده', 'واحد', 'طول موج', 'دستگاه', 'مسئول', 'توضیحات', 'تاریخ'],
+        [12, 12, 10, 12, 9, 13, 12, 11, 9],
+        powerTests.map((t: PowerTest) => [
+          dash(t.location),
+          ctxCell(t.routeId, t.boxId),
+          valueCell(t),
+          powerUnitLabels[t.unit],
+          t.wavelengthNm !== undefined ? `${toFa(t.wavelengthNm)} nm` : '—',
+          dash(t.deviceModel),
+          dash(t.assigneeName),
+          dash(t.description),
+          formatJalali(t.date),
+        ])
       )
+    } else {
+      dataTableBlocks(
+        'powerTests',
+        ['محل تست', 'مقدار ثبت‌شده', 'واحد', 'طول موج', 'دستگاه', 'مسئول', 'تاریخ'],
+        [16, 12, 14, 11, 15, 16, 16],
+        powerTests.map((t: PowerTest) => [
+          dash(t.location),
+          valueCell(t),
+          powerUnitLabels[t.unit],
+          t.wavelengthNm !== undefined ? `${toFa(t.wavelengthNm)} nm` : '—',
+          dash(t.deviceModel),
+          dash(t.assigneeName),
+          formatJalali(t.date),
+        ])
+      )
+    }
     blocks.push(note('مقادیر تست توان عیناً همان اندازه‌گیری ثبت‌شده‌اند. تعیین حد قبولی/ردی بر عهده کارفرما و مشخصات پروژه است و در این گزارش خودسرانه انجام نمی‌شود.'))
   }
 
-  // دراپ‌کابل
+  // دراپ‌کابل — مرتب‌شده بر اساس زمان ثبت (H3)؛ حالت کامل: جدول جزئیات برند/مدل/کور/مجری/مبدأ (M5)
   if (show.dropCables) {
     blocks.push(sectionTitle('دراپ‌کابل', dropCables.length))
-    if (dropCables.length === 0) blocks.push(emptyHint('دراپ‌کابلی ثبت نشده است.'))
-    else {
-      blocks.push(
-        dataTable(
-          ['مقصد', 'شناسه سرویس', 'کابل', 'متراژ اولیه', 'برگشتی', 'مصرفی', 'نوع مقدار مصرفی', 'روش اجرا', 'وضعیت نصب', 'تحویل', 'تاریخ'],
-          dropCables.map((c: DropCable) => {
-            const r = computeConsumed(c.initialMeters, c.returnedMeters, c.consumedUser)
-            const consumedText =
-              r.valid && r.value !== undefined ? formatMeters(r.value) : '—'
-            const sourceText = r.source === 'user' ? 'واردشده توسط کاربر' : r.source === 'auto' ? 'محاسباتی' : '—'
-            return [
-              dash(c.destination),
-              dash(c.serviceId),
-              dash(c.cableType),
-              formatMeters(c.initialMeters),
-              formatMeters(c.returnedMeters),
-              consumedText,
-              sourceText,
-              c.installMethod === 'custom' && c.customMethodLabel ? dash(c.customMethodLabel) : installMethodLabels[c.installMethod],
-              installStatusLabels[c.installStatus],
-              deliveryStatusLabels[c.deliveryStatus],
-              formatJalali(c.date),
-            ]
-          })
-        )
+    if (dropCables.length === 0) {
+      blocks.push(emptyHint('دراپ‌کابلی ثبت نشده است.'))
+    } else {
+      dataTableBlocks(
+        'dropCables',
+        ['مقصد', 'شناسه سرویس', 'کابل', 'متراژ اولیه', 'برگشتی', 'مصرفی', 'نوع مقدار مصرفی', 'روش اجرا', 'وضعیت نصب', 'تحویل', 'تاریخ'],
+        [12, 9, 10, 8, 8, 8, 10, 11, 9, 8, 7],
+        dropCables.map((c: DropCable) => {
+          const r = computeConsumed(c.initialMeters, c.returnedMeters, c.consumedUser)
+          const consumedText = r.valid && r.value !== undefined ? formatMeters(r.value) : '—'
+          const sourceText = r.source === 'user' ? 'واردشده توسط کاربر' : r.source === 'auto' ? 'محاسباتی' : '—'
+          return [
+            dash(c.destination),
+            dash(c.serviceId),
+            dash(c.cableType),
+            formatMeters(c.initialMeters),
+            formatMeters(c.returnedMeters),
+            consumedText,
+            sourceText,
+            c.installMethod === 'custom' && c.customMethodLabel ? dash(c.customMethodLabel) : installMethodLabels[c.installMethod],
+            installStatusLabels[c.installStatus],
+            deliveryStatusLabels[c.deliveryStatus],
+            formatJalali(c.date),
+          ]
+        })
       )
+      if (full) {
+        const hasExtra = dropCables.some(
+          (c) =>
+            !!c.sourceBoxId ||
+            !!c.brand?.trim() ||
+            !!c.model?.trim() ||
+            c.coreCount !== undefined ||
+            !!c.executorName?.trim()
+        )
+        if (hasExtra) {
+          blocks.push(sectionTitle('جزئیات بیشتر دراپ‌کابل'))
+          dataTableBlocks(
+            'dropCablesExtra',
+            ['مقصد', 'باکس مبدأ', 'برند', 'مدل', 'تعداد کور', 'مجری'],
+            [20, 18, 15, 15, 12, 20],
+            dropCables.map((c: DropCable) => [
+              dash(c.destination),
+              boxCell(c.sourceBoxId),
+              dash(c.brand),
+              dash(c.model),
+              c.coreCount !== undefined ? toFa(c.coreCount) : '—',
+              dash(c.executorName),
+            ])
+          )
+        }
+      }
       const total = dropCables.reduce((s, c) => {
         const r = computeConsumed(c.initialMeters, c.returnedMeters, c.consumedUser)
         return s + (r.valid && r.value !== undefined ? r.value : 0)
@@ -383,28 +597,46 @@ async function buildBlocks(opts: ReportOptions, data: ReportData): Promise<Block
     }
   }
 
-  // عکس‌ها
-  if (show.photos && photos.length > 0) {
-    blocks.push(sectionTitle('تصاویر', photos.length))
-    for (const p of photos) {
-      const url = await blobToReportDataUrl(p.blob, mode === 'summary' ? 700 : 900, 0.8)
-      blocks.push(photoBlock(url, p.title, `${photoCategoryLabels[p.category]}${p.description ? ' — ' + p.description : ''}`, p.width, p.height))
+  // عکس‌ها — یک عکس خراب هرگز کل گزارش را نمی‌کشد؛ فاز پیشرفت واقعی (M1)
+  if (show.photos) {
+    const linked = !!opts.photoIds && opts.photoIds.length > 0
+    if (linked && missingSelected > 0) {
+      blocks.push(
+        note(`تعداد ${toFa(missingSelected)} عکس از انتخاب شما دیگر در پروژه موجود نیست و از گزارش حذف شد.`)
+      )
+    }
+    if (photos.length > 0) {
+      // عنوان شامل تعداد واقعی درج‌شده — آمار بالا کل عکس‌های پروژه را نشان می‌دهد (M4)
+      blocks.push(sectionTitle(`تصاویر (درج‌شده: ${toFa(photos.length)})`))
+      for (let idx = 0; idx < photos.length; idx++) {
+        const p = photos[idx]
+        opts.onProgress?.({ phase: 'photos', done: idx + 1, total: photos.length })
+        try {
+          const blob = await getPhotoBlob(p.id)
+          if (!blob) {
+            blocks.push(note(`تصویر «${p.title}» در دسترس نیست`))
+            continue
+          }
+          const url = await blobToReportDataUrl(blob, mode === 'summary' ? 700 : 900, 0.8)
+          blocks.push(
+            photoBlock(
+              url,
+              p.title,
+              `${photoCategoryLabels[p.category]}${p.description ? ' — ' + p.description : ''}`,
+              p.width,
+              p.height
+            )
+          )
+        } catch {
+          blocks.push(note(`تصویر «${p.title}» قابل درج نبود`))
+        }
+      }
+    } else {
+      blocks.push(emptyHint('تصویری برای درج در گزارش وجود ندارد.'))
     }
   }
 
-  return blocks
-}
-
-interface ReportData {
-  project: Project
-  routes: Route[]
-  boxes: Box[]
-  operations: Operation[]
-  fusions: Fusion[]
-  powerTests: PowerTest[]
-  dropCables: DropCable[]
-  photos: Photo[]
-  profiles: Profile[]
+  return { blocks, headerOf }
 }
 
 // صفحه‌بندی و رندر
@@ -416,6 +648,55 @@ const PAD_BOTTOM = 72
 const CONTENT_W = PAGE_W - PAD_X * 2
 // ۲۴px حاشیه امن اضافه برای تفاوت جزئی ارتفاع رندر (جلوگیری از هم‌پوشانی با فوتر)
 const CONTENT_H = PAGE_H - PAD_TOP - PAD_BOTTOM - 24
+// حداقل فضای بعد از تیتر بخش/سرستون تا حداقل یک ردیف در همین صفحه جا شود (کنترل یتیم)
+const KEEP_MIN = 96
+
+interface PageItem {
+  html: string
+}
+
+/**
+ * صفحه‌بندی بلوک‌ها — هیچ ردیفی هرگز بریده نمی‌شود (C1):
+ * اگر ردیفی در صفحه جا نشود، به صفحه بعد می‌رود و سرستون جدولش (tableId)
+ * دوباره در بالای آن صفحه رندر می‌شود.
+ */
+function paginate(
+  blocks: Block[],
+  heights: number[],
+  headerOf: Map<string, { block: Block; index: number }>
+): PageItem[][] {
+  const pages: PageItem[][] = [[]]
+  let acc = 0
+  for (let i = 0; i < blocks.length; i++) {
+    const b = blocks[i]
+    const h = heights[i] ?? 0
+    const isHeader = !!b.isTableHeader
+    const isRow = !!b.tableId && !isHeader
+
+    let mustBreak = acc > 0 && acc + h > CONTENT_H
+    // تیتر بخش/سرستون تنها نماند — اگر جا برای حداقل یک ردیف بعدش نیست، از همان اول صفحه جدید
+    if (!mustBreak && b.keepWithNext && acc > 0 && acc + h + KEEP_MIN > CONTENT_H) mustBreak = true
+
+    if (mustBreak) {
+      pages.push([])
+      acc = 0
+      if (isRow) {
+        // تکرار سرستون جدول در بالای صفحه جدید
+        const hdr = headerOf.get(b.tableId!)
+        if (hdr) {
+          const hh = heights[hdr.index] ?? 0
+          pages[pages.length - 1].push({ html: hdr.block.html })
+          acc += hh
+        }
+      }
+      // توجه: اگر یک ردیف تکی از کل CONTENT_H بلندتر باشد (متن چندده‌خطی نامعقول)
+      // بدون شکستن خود ردیف راهی جز پذیرش سرریز نیست — در داده واقعی رخ نمی‌دهد.
+    }
+    pages[pages.length - 1].push({ html: b.html })
+    acc += h
+  }
+  return pages
+}
 
 function attachHidden(html: string): { el: HTMLDivElement; cleanup: () => void } {
   const el = document.createElement('div')
@@ -448,8 +729,9 @@ function pageShell(headerHtml: string, footerHtml: string, contentHtml: string):
 /**
  * تولید گزارش PDF پروژه.
  * حروف فارسی به‌صورت رندر مرورگری درج می‌شوند (بدون جداافتادن حروف).
+ * خروجی: blob PDF + تعداد صفحات.
  */
-export async function generateProjectReport(opts: ReportOptions): Promise<Blob> {
+export async function generateProjectReport(opts: ReportOptions): Promise<GeneratedReport> {
   const project = await db.projects.get(opts.projectId)
   if (!project) throw new Error('پروژه یافت نشد')
 
@@ -464,64 +746,101 @@ export async function generateProjectReport(opts: ReportOptions): Promise<Blob> 
     db.profiles.toArray(),
   ])
 
-  // عکس‌های گزارش: انتخابی یا بر اساس حالت
+  // ----- مرتب‌سازی واقعی داده‌ها (H3) -----
+  // مسیرها: زمان ثبت صعودی
+  routes.sort((a, b) => a.createdAt - b.createdAt)
+  const routeIndexById = new Map<string, number>(routes.map((r, i) => [r.id, i]))
+  const routeNameById = new Map<string, string>(routes.map((r) => [r.id, r.name]))
+  // باکس‌ها: گروه‌بندی بر اساس ترتیب مسیر، سپس شماره طبیعی (عددی)
+  boxes.sort((a, b) => {
+    const ra = routeIndexById.get(a.routeId) ?? Number.MAX_SAFE_INTEGER
+    const rb = routeIndexById.get(b.routeId) ?? Number.MAX_SAFE_INTEGER
+    if (ra !== rb) return ra - rb
+    return a.number.localeCompare(b.number, 'fa', { numeric: true })
+  })
+  const boxLabelById = new Map<string, string>(boxes.map((b) => [b.id, b.number]))
+  // بقیه: زمان ثبت صعودی
+  operations.sort((a, b) => a.createdAt - b.createdAt)
+  fusions.sort((a, b) => a.createdAt - b.createdAt)
+  powerTests.sort((a, b) => a.createdAt - b.createdAt)
+  dropCables.sort((a, b) => a.createdAt - b.createdAt)
+
+  // ----- عکس‌های گزارش: اول مرتب‌سازی، بعد برش (H2) -----
   let photos: Photo[] = []
-  const linked = opts.photoIds && opts.photoIds.length > 0
+  let missingSelected = 0
+  const linked = !!opts.photoIds && opts.photoIds.length > 0
   if (opts.sections.photos) {
-    photos = linked ? allPhotos.filter((p) => opts.photoIds!.includes(p.id)) : allPhotos
-    if (!linked && opts.mode === 'summary') photos = photos.slice(0, 8)
-    photos.sort((a, b) => a.createdAt - b.createdAt)
-  }
-
-  const data: ReportData = { project, routes, boxes, operations, fusions, powerTests, dropCables, photos, profiles }
-  const blocks = await buildBlocks(opts, data)
-  opts.onProgress?.(0, blocks.length)
-
-  // اندازه‌گیری ارتفاع بلوک‌ها
-  const measure = attachHidden(`<div style="width:${CONTENT_W}px;"></div>`)
-  const measureWrap = measure.el.firstElementChild as HTMLDivElement
-  const heights: number[] = []
-  for (const b of blocks) {
-    const tmp = document.createElement('div')
-    tmp.innerHTML = b.html
-    const node = tmp.firstElementChild as HTMLElement
-    measureWrap.appendChild(node)
-    heights.push(node.getBoundingClientRect().height)
-    node.remove()
-  }
-  measure.cleanup()
-
-  // صفحه‌بندی
-  const pages: Block[][] = [[]]
-  let acc = 0
-  for (let i = 0; i < blocks.length; i++) {
-    const h = heights[i]
-    if (acc + h > CONTENT_H && acc > 0) {
-      pages.push([])
-      acc = 0
+    const sorted = [...allPhotos].sort((a, b) => a.createdAt - b.createdAt)
+    if (linked) {
+      const wanted = new Set(opts.photoIds)
+      photos = sorted.filter((p) => wanted.has(p.id))
+      // هشدار صادقانه: انتخاب‌هایی که دیگر وجود ندارند (LOW)
+      missingSelected = Math.max(0, opts.photoIds!.length - photos.length)
+    } else {
+      photos = sorted
+      if (opts.mode === 'summary') photos = photos.slice(0, 8) // «۸ عکس اول» واقعی — نه ۸ عکس تصادفی
     }
-    pages[pages.length - 1].push(blocks[i])
-    acc += h
   }
+
+  const data: ReportData = {
+    project,
+    routes,
+    boxes,
+    operations,
+    fusions,
+    powerTests,
+    dropCables,
+    photos,
+    allPhotosCount: allPhotos.length,
+    missingSelected,
+    profiles,
+    routeNameById,
+    boxLabelById,
+  }
+  const { blocks, headerOf } = await buildBlocks(opts, data)
+
+  // فونت‌ها حتماً قبل از اندازه‌گیری لود شوند وگرنه شکست صفحه اشتباه است (H4)
+  if (typeof document !== 'undefined' && document.fonts?.ready) await document.fonts.ready
+  opts.onProgress?.({ phase: 'measure', done: 0, total: 0 })
+
+  // اندازه‌گیری ارتفاع بلوک‌ها — هر بلوک داخل flow-root تا marginها هم حساب شوند (H4)
+  const measure = attachHidden('')
+  const heights: number[] = []
+  try {
+    for (const b of blocks) {
+      const m = document.createElement('div')
+      m.style.cssText = `display:flow-root;width:${CONTENT_W}px;`
+      m.innerHTML = b.html
+      measure.el.appendChild(m)
+      heights.push(m.getBoundingClientRect().height)
+      m.remove()
+    }
+  } finally {
+    measure.cleanup()
+  }
+
+  // صفحه‌بندی (با تکرار سرستون جدول‌ها هنگام شکست)
+  const pages = paginate(blocks, heights, headerOf)
 
   const headerHtml = `<span>فیبرکار — ${esc(project.name)}</span><span>کد پروژه: ${dash(project.code)}</span>`
   const footerDate = `تاریخ گزارش: ${formatJalali(Date.now())}`
-  const pagesHtml = pages.map((pageBlocks, idx) =>
-    pageShell(
-      headerHtml,
-      `<span>${footerDate}</span><span>صفحه ${toFa(idx + 1)} از ${toFa(pages.length)}</span>`,
-      pageBlocks.map((b) => b.html).join('')
-    )
-  )
 
-  const holder = attachHidden(pagesHtml.join(''))
+  const holder = attachHidden('')
   try {
-    if (document.fonts?.ready) await document.fonts.ready
     const pdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' })
-    const pageEls = holder.el.querySelectorAll<HTMLDivElement>('.fk-page')
-    const total = pageEls.length
-    for (let i = 0; i < total; i++) {
-      const canvas = await html2canvas(pageEls[i], {
+    for (let i = 0; i < pages.length; i++) {
+      // C2: هر بار فقط «یک صفحه» در DOM — html2canvas-pro کل سند را کلون می‌کند؛
+      // سوار کردن همه صفحات هم‌زمان = بمب حافظه (OOM) روی گزارش‌های پراتصویر اندروید.
+      holder.el.innerHTML = pageShell(
+        headerHtml,
+        `<span>${footerDate}</span><span>صفحه ${toFa(i + 1)} از ${toFa(pages.length)}</span>`,
+        pages[i].map((it) => it.html).join('')
+      )
+      const pageEl = holder.el.firstElementChild as HTMLDivElement
+      // اطمینان از decode شدن تصاویر همین صفحه قبل از رندر
+      const imgs = holder.el.querySelectorAll('img')
+      await Promise.all(Array.from(imgs).map((im) => im.decode().catch(() => {})))
+      const canvas = await html2canvas(pageEl, {
         scale: 2,
         backgroundColor: '#ffffff',
         logging: false,
@@ -530,42 +849,61 @@ export async function generateProjectReport(opts: ReportOptions): Promise<Blob> 
       const img = canvas.toDataURL('image/jpeg', 0.92)
       if (i > 0) pdf.addPage()
       pdf.addImage(img, 'JPEG', 0, 0, 210, 297, undefined, 'FAST')
+      // آزادسازی فوری حافظه بوم
       canvas.width = 0
       canvas.height = 0
-      opts.onProgress?.(i + 1, total)
+      opts.onProgress?.({ phase: 'pages', done: i + 1, total: pages.length })
     }
-    return pdf.output('blob')
+    // متادیتای PDF (LOW)
+    pdf.setProperties({
+      title: `گزارش ${project.name}`,
+      subject: 'گزارش رسمی پروژه شبکه فیبر نوری',
+      author: 'فیبرکار',
+      keywords: 'فیبرکار, فیبر نوری, گزارش پروژه',
+      creator: 'فیبرکار',
+    })
+    pdf.setLanguage('fa')
+    return { blob: pdf.output('blob'), pages: pages.length }
   } finally {
     holder.cleanup()
   }
 }
 
 // ---------- اشتراک‌گذاری / دانلود ----------
-export async function shareOrDownloadBlob(blob: Blob, filename: string): Promise<'shared' | 'downloaded'> {
-  // داخل اپ اندروید (APK): استفاده از شیت اشتراک بومی سیستم
+/**
+ * خروجی صادقانه:
+ *  - 'shared'     → شیت اشتراک (بومی یا وب) باز شد
+ *  - 'saved'      → فایل در پوشه اسناد دستگاه ذخیره شد (مسیر بومی)
+ *  - 'downloaded' → فایل با مسیر دانلود مرورگر ذخیره شد
+ * در اپ بومی هرگز به مسیر وب سقوط نمی‌کنیم؛ شکست واقعی = خطای واقعی (H5).
+ */
+export async function shareOrDownloadBlob(
+  blob: Blob,
+  filename: string
+): Promise<'shared' | 'saved' | 'downloaded'> {
+  const safeName = sanitizeFileName(filename, '.pdf') // M6
+  // داخل اپ اندروید (APK): شیت اشتراک بومی / ذخیره در اسناد — بدون دروغ
   if (isNativeApp()) {
-    try {
-      const res = await nativeShareOrSaveFile(blob, filename)
-      return res === 'shared' ? 'shared' : 'downloaded'
-    } catch {
-      // در صورت خطای بومی، ادامه به مسیر وب
-    }
+    const res = await nativeShareOrSaveFile(blob, safeName)
+    if (res === 'shared') return 'shared'
+    if (res === 'saved') return 'saved'
+    throw new Error('اشتراک‌گذاری و ذخیره گزارش در دستگاه هر دو ناموفق بود')
   }
-  const file = new File([blob], filename, { type: blob.type || 'application/pdf' })
+  const file = new File([blob], safeName, { type: blob.type || 'application/pdf' })
   const nav = navigator as Navigator & { canShare?: (data: { files?: File[] }) => boolean }
   if (nav.share && nav.canShare?.({ files: [file] })) {
     try {
-      await nav.share({ files: [file], title: filename })
+      await nav.share({ files: [file], title: safeName })
       return 'shared'
     } catch (e) {
       if ((e as Error)?.name === 'AbortError') return 'shared' // کاربر لغو کرد
-      // ادامه به دانلود
+      // ادامه به دانلود مرورگر
     }
   }
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
   a.href = url
-  a.download = filename
+  a.download = safeName
   document.body.appendChild(a)
   a.click()
   a.remove()

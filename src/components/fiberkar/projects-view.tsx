@@ -9,11 +9,14 @@ import {
   FolderKanban,
   MoreVertical,
   Pencil,
+  Pin,
+  PinOff,
   Plus,
   Search,
   Trash2,
 } from 'lucide-react'
 import { toast } from 'sonner'
+import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -51,11 +54,12 @@ import {
   db,
   deleteProjectCascade,
   setProjectArchived,
+  setProjectPinned,
   updateProject,
   type ProjectInput,
 } from '@/lib/localdb'
 import { messages, projectStatusLabels, projectStatusVariants } from '@/lib/labels'
-import { formatJalali, toFa } from '@/lib/persian'
+import { formatJalali, normalizeFa, toFa } from '@/lib/persian'
 import type { Profile, Project, ProjectStatus } from '@/lib/types'
 
 // ---------- نمایش نام پروفایل ----------
@@ -282,14 +286,17 @@ function ProjectFormDialog({
 function ProjectRowMenu({
   project,
   onEdit,
+  onTogglePin,
   onArchive,
   onDelete,
 }: {
   project: Project
   onEdit: () => void
+  onTogglePin: () => void
   onArchive: () => void
   onDelete: () => void
 }) {
+  const pinned = project.pinned === 1
   return (
     <DropdownMenu dir="rtl">
       <DropdownMenuTrigger asChild>
@@ -307,6 +314,10 @@ function ProjectRowMenu({
         <DropdownMenuItem onClick={onEdit}>
           <Pencil className="size-4" />
           ویرایش
+        </DropdownMenuItem>
+        <DropdownMenuItem onClick={onTogglePin}>
+          {pinned ? <PinOff className="size-4" /> : <Pin className="size-4" />}
+          {pinned ? 'برداشتن سنجاق' : 'سنجاق'}
         </DropdownMenuItem>
         <DropdownMenuItem onClick={onArchive}>
           {project.archived === 1 ? <ArchiveRestore className="size-4" /> : <Archive className="size-4" />}
@@ -332,7 +343,13 @@ interface ProjectCounts {
 export default function ProjectsView() {
   const navigate = useAppStore((s) => s.navigate)
 
+  // جست‌وجو با تأخیر ۲۵۰ میلی‌ثانیه‌ای تا شمارش‌ها با هر کلید دوباره‌محاسبه نشوند
+  const [searchInput, setSearchInput] = React.useState('')
   const [search, setSearch] = React.useState('')
+  React.useEffect(() => {
+    const t = window.setTimeout(() => setSearch(searchInput), 250)
+    return () => window.clearTimeout(t)
+  }, [searchInput])
   const [statusFilter, setStatusFilter] = React.useState<string>('all')
   const [showArchive, setShowArchive] = React.useState(false)
   const [dialogOpen, setDialogOpen] = React.useState(false)
@@ -342,12 +359,14 @@ export default function ProjectsView() {
 
   const allProjects = useLiveQuery(async () => {
     const ps = await db.projects.toArray()
-    return ps.sort((a, b) => b.createdAt - a.createdAt)
+    // سنجاق‌شده‌ها همیشه اول؛ سپس جدیدترین
+    return ps.sort((a, b) => (b.pinned ?? 0) - (a.pinned ?? 0) || b.createdAt - a.createdAt)
   }, [])
 
+  // جست‌وجو مقاوم به ي/ی، ك/ک، نیم‌فاصله و ارقام فارسی — هم سوزن هم انبار متن نرمال می‌شوند
   const visible = React.useMemo(() => {
     if (!allProjects) return undefined
-    const q = search.trim()
+    const tokens = normalizeFa(search).split(/\s+/).filter(Boolean)
     return allProjects.filter((p) => {
       if (showArchive) {
         if (p.archived !== 1) return false
@@ -355,9 +374,9 @@ export default function ProjectsView() {
         return false
       }
       if (statusFilter !== 'all' && p.status !== (statusFilter as ProjectStatus)) return false
-      if (q) {
-        const hay = `${p.name} ${p.code} ${p.client} ${p.area}`
-        if (!hay.includes(q)) return false
+      if (tokens.length > 0) {
+        const hay = normalizeFa([p.name, p.code, p.client, p.area].join(' '))
+        if (!tokens.every((t) => hay.includes(t))) return false
       }
       return true
     })
@@ -404,6 +423,16 @@ export default function ProjectsView() {
     }
   }
 
+  async function handleTogglePin(p: Project) {
+    try {
+      const pinned = p.pinned === 1
+      await setProjectPinned(p.id, pinned ? 0 : 1)
+      toast.success(pinned ? 'سنجاق پروژه برداشته شد' : 'پروژه سنجاق شد')
+    } catch {
+      toast.error(messages.error)
+    }
+  }
+
   async function handleDelete() {
     if (!deleteTarget) return
     setDeleting(true)
@@ -436,8 +465,8 @@ export default function ProjectsView() {
         <div className="relative">
           <Search className="pointer-events-none absolute right-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
           <Input
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
+            value={searchInput}
+            onChange={(e) => setSearchInput(e.target.value)}
             placeholder="جست‌وجو بر اساس نام، کد، کارفرما یا محدوده…"
             className="min-h-11 pr-9"
             aria-label="جست‌وجوی پروژه"
@@ -489,7 +518,13 @@ export default function ProjectsView() {
                 title={p.name}
                 badges={
                   <>
-                    <StatusBadge label={projectStatusLabels[p.status]} variant={projectStatusVariants[p.status]} />
+                    <StatusBadge label={projectStatusLabels[p.status] ?? 'نامشخص'} variant={projectStatusVariants[p.status]} />
+                    {p.pinned === 1 && (
+                      <Badge variant="outline" className="shrink-0 gap-1 border-primary/40 text-primary">
+                        <Pin className="size-3" aria-hidden />
+                        سنجاق‌شده
+                      </Badge>
+                    )}
                     {p.archived === 1 && <StatusBadge label="آرشیو" variant="outline" />}
                   </>
                 }
@@ -510,6 +545,7 @@ export default function ProjectsView() {
                   <ProjectRowMenu
                     project={p}
                     onEdit={() => openEdit(p)}
+                    onTogglePin={() => void handleTogglePin(p)}
                     onArchive={() => handleArchiveToggle(p)}
                     onDelete={() => setDeleteTarget(p)}
                   />

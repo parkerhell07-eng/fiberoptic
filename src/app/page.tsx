@@ -4,6 +4,7 @@
 import { useEffect, useState, useSyncExternalStore } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import { useTheme } from 'next-themes'
+import { toast } from 'sonner'
 import {
   Cable,
   ClipboardList,
@@ -57,7 +58,7 @@ const VIEW_COMPONENTS: Record<ViewKey, React.ComponentType> = {
 export default function Home() {
   const view = useAppStore((s) => s.view)
   const navigate = useAppStore((s) => s.navigate)
-  const { theme, setTheme } = useTheme()
+  const { resolvedTheme, setTheme } = useTheme()
   // تشخیص hydration بدون setState داخل effect
   const mounted = useSyncExternalStore(
     () => () => {},
@@ -72,12 +73,54 @@ export default function Home() {
   useEffect(() => {
     // ثبت Service Worker فقط در بیلد production (در حالت dev پایدار نیست)
     if (process.env.NODE_ENV === 'production' && 'serviceWorker' in navigator) {
-      navigator.serviceWorker.register('/sw.js').catch(() => {})
+      navigator.serviceWorker
+        .register('/sw.js')
+        .then((reg) => {
+          // اطلاع نسخه جدید — toast با دکمه به‌روزرسانی
+          reg.addEventListener('updatefound', () => {
+            const nw = reg.installing
+            if (!nw) return
+            nw.addEventListener('statechange', () => {
+              if (nw.state === 'installed' && navigator.serviceWorker.controller) {
+                toast.info('نسخه جدید فیبرکار آماده است', {
+                  description: 'برای اعمال به‌روزرسانی، بازخوانی کنید',
+                  action: {
+                    label: 'به‌روزرسانی',
+                    onClick: () => {
+                      nw.postMessage({ type: 'SKIP_WAITING' })
+                    },
+                  },
+                  duration: 15000,
+                })
+              }
+            })
+          })
+        })
+        .catch(() => {})
+      navigator.serviceWorker.addEventListener('controllerchange', () => {
+        window.location.reload()
+      })
     }
   }, [])
 
+  // میان‌بر صفحه‌کلید «/» برای جست‌وجوی سراسری
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null
+      const typing =
+        target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)
+      if (!typing && e.key === '/') {
+        e.preventDefault()
+        navigate('search')
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [navigate])
+
   const View = VIEW_COMPONENTS[view] ?? DashboardView
-  const toggleTheme = () => setTheme(theme === 'dark' ? 'light' : 'dark')
+  const toggleTheme = () => setTheme(resolvedTheme === 'dark' ? 'light' : 'dark')
+  const moreActive = view === 'photos' || view === 'profiles' || view === 'reports' || view === 'backup' || view === 'search'
 
   return (
     <div className="flex min-h-dvh flex-col bg-background">
@@ -132,7 +175,7 @@ export default function Home() {
       {/* فوتر چسبان به پایین */}
       <footer className="mt-auto border-t bg-muted/40 pb-[calc(env(safe-area-inset-bottom)+5.5rem)] pt-3">
         <div className="mx-auto flex w-full max-w-3xl flex-wrap items-center justify-center gap-x-4 gap-y-1 px-4 text-xs text-muted-foreground">
-          <span>فیبرکار نسخه ۱٫۰</span>
+          <span>فیبرکار نسخه ۱٫۱</span>
           <span className="flex items-center gap-1">
             <WifiOff className="size-3.5" />
             کاملاً آفلاین — داده‌ها فقط روی همین دستگاه
@@ -151,7 +194,7 @@ export default function Home() {
           <NavItem icon={<FolderKanban className="size-5" />} label="پروژه‌ها" active={view === 'projects' || view === 'project' || view === 'route' || view === 'box'} onClick={() => navigate('projects')} />
           <NavItem icon={<ClipboardList className="size-5" />} label="عملیات" active={view === 'operations' || view === 'fusion' || view === 'power-tests'} onClick={() => navigate('operations')} />
           <NavItem icon={<Cable className="size-5" />} label="دراپ‌کابل" active={view === 'drop-cables'} onClick={() => navigate('drop-cables')} />
-          <BottomMoreMenu navigate={navigate} />
+          <BottomMoreMenu navigate={navigate} active={moreActive} />
         </div>
       </nav>
     </div>
@@ -197,14 +240,17 @@ function MoreItem({ icon, label, onClick }: { icon: React.ReactNode; label: stri
   )
 }
 
-function BottomMoreMenu({ navigate }: { navigate: (v: ViewKey) => void }) {
+function BottomMoreMenu({ navigate, active }: { navigate: (v: ViewKey) => void; active: boolean }) {
   const [open, setOpen] = useState(false)
   return (
     <Sheet open={open} onOpenChange={setOpen}>
       <SheetTrigger asChild>
         <button
           type="button"
-          className="flex min-h-[3.5rem] flex-col items-center justify-center gap-0.5 text-[10px] text-muted-foreground transition-colors hover:text-foreground sm:text-xs"
+          aria-current={active ? 'page' : undefined}
+          className={`flex min-h-[3.5rem] flex-col items-center justify-center gap-0.5 text-[10px] transition-colors sm:text-xs ${
+            active ? 'font-semibold text-primary' : 'text-muted-foreground hover:text-foreground'
+          }`}
         >
           <Menu className="size-5" />
           بیشتر

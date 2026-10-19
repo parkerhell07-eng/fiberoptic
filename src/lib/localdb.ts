@@ -1,6 +1,10 @@
 // فایبرکار — پایگاه داده محلی (IndexedDB via Dexie)
 // کاملاً آفلاین؛ هیچ داده‌ای به سرور ارسال نمی‌شود.
-import Dexie, { type Table } from 'dexie'
+//
+// v2 تغییرات:
+//  - جدول جداگانه photoBlobs: لیست‌ها هرگز blob عکس را به RAM نمی‌آورند (جلوگیری از OOM)
+//  - ایندکس pinned برای پروژه‌ها (سنجاق‌کردن)
+import Dexie, { type Table, type Transaction, type UpdateSpec } from 'dexie'
 import type {
   Box,
   ConsumedResult,
@@ -9,13 +13,15 @@ import type {
   LastBackupInfo,
   Operation,
   Photo,
+  PhotoBlobRow,
   PhotoLink,
   PowerTest,
   Profile,
   Project,
+  ProjectStatus,
   Route,
 } from './types'
-import { computeConsumed } from './persian'
+import { computeConsumed, isoToJalali, jalaliMonthNames, jalaliMonthWindow, todayISO } from './persian'
 import { profileRoleLabels } from './labels'
 
 // ---------- شناسه و زمان ----------
@@ -39,6 +45,7 @@ export class FiberDB extends Dexie {
   dropCables!: Table<DropCable, string>
   profiles!: Table<Profile, string>
   photos!: Table<Photo, string>
+  photoBlobs!: Table<PhotoBlobRow, string>
   settings!: Table<{ key: string; value: unknown }, string>
 
   constructor() {
@@ -55,6 +62,27 @@ export class FiberDB extends Dexie {
       photos: 'id, projectId, routeId, boxId, operationId, fusionId, powerTestId, dropCableId, category, createdAt',
       settings: 'key',
     })
+    this.version(2)
+      .stores({
+        // فقط جدول‌های تغییرکرده — بقیه از نسخه قبل ارث می‌رسند
+        projects: 'id, code, status, archived, pinned, createdAt',
+        photoBlobs: 'id',
+      })
+      .upgrade(async (tx: Transaction) => {
+        // انتقال blob عکس‌ها از photos به photoBlobs (مهاجرت شفاف)
+        const photosTable = tx.table('photos')
+        const blobsTable = tx.table('photoBlobs')
+        const all = (await photosTable.toArray()) as Array<Photo & { blob?: Blob }>
+        const blobRows: PhotoBlobRow[] = []
+        for (const p of all) {
+          if (p.blob) {
+            blobRows.push({ id: p.id, blob: p.blob })
+            delete p.blob
+          }
+        }
+        if (blobRows.length > 0) await blobsTable.bulkPut(blobRows)
+        if (all.length > 0) await photosTable.bulkPut(all as Photo[])
+      })
   }
 }
 
@@ -74,6 +102,24 @@ export const db: FiberDB = new Proxy({} as FiberDB, {
   },
 })
 
+/** خطای رکورد یافت‌نشده — برای updateهایی که رکورد حذف‌شده را به‌روزرسانی می‌کنند */
+export class RecordNotFoundError extends Error {
+  constructor(entity: string) {
+    super(`${entity} یافت نشد (حذف‌شده)`)
+    this.name = 'RecordNotFoundError'
+  }
+}
+
+/** update Dexie که در نبود رکورد پرتاب می‌کند (ذخیره ارواح را نمی‌پذیرد) */
+async function updateStrict<T>(table: Table<T, string>, id: string, patch: Partial<T>, entity: string): Promise<void> {
+  const n = await table.update(id, patch as UpdateSpec<T>)
+  if (n === 0) {
+    // شاید واقعاً نباشد؛ بررسی نهایی
+    const exists = await table.get(id)
+    if (!exists) throw new RecordNotFoundError(entity)
+  }
+}
+
 // ---------- تنظیمات ----------
 export async function getSetting<T>(key: string, fallback: T): Promise<T> {
   const row = await db.settings.get(key)
@@ -92,34 +138,58 @@ export async function getLastBackupInfo(): Promise<LastBackupInfo | null> {
 export type ProjectInput = Omit<Project, 'id' | 'createdAt' | 'updatedAt' | 'archived'>
 export async function createProject(input: ProjectInput): Promise<Project> {
   const t = nowMs()
-  const rec: Project = { ...input, id: uid(), archived: 0, createdAt: t, updatedAt: t }
+  const rec: Project = { ...input, id: uid(), archived: 0, pinned: 0, createdAt: t, updatedAt: t }
   await db.projects.add(rec)
   return rec
 }
 
 export async function updateProject(id: string, patch: Partial<Project>): Promise<void> {
-  await db.projects.update(id, { ...patch, updatedAt: nowMs() })
+  await updateStrict(db.projects, id, { ...patch, updatedAt: nowMs() }, 'پروژه')
 }
 
 export async function setProjectArchived(id: string, archived: 0 | 1): Promise<void> {
-  await db.projects.update(id, { archived, updatedAt: nowMs() })
+  await updateStrict(db.projects, id, { archived, updatedAt: nowMs() }, 'پروژه')
+}
+
+export async function setProjectPinned(id: string, pinned: 0 | 1): Promise<void> {
+  await updateStrict(db.projects, id, { pinned, updatedAt: nowMs() }, 'پروژه')
 }
 
 export async function deleteProjectCascade(id: string): Promise<void> {
-  await db.transaction('rw', [db.projects, db.routes, db.boxes, db.operations, db.fusions, db.powerTests, db.dropCables, db.photos], async () => {
-    const routeIds = (await db.routes.where('projectId').equals(id).toArray()).map((r) => r.id)
-    const boxIds = (await db.boxes.where('projectId').equals(id).toArray()).map((b) => b.id)
-    await db.photos.where('projectId').equals(id).delete()
-    await db.dropCables.where('projectId').equals(id).delete()
-    await db.powerTests.where('projectId').equals(id).delete()
-    await db.fusions.where('projectId').equals(id).delete()
-    await db.operations.where('projectId').equals(id).delete()
-    await db.boxes.where('projectId').equals(id).delete()
-    await db.routes.where('projectId').equals(id).delete()
-    await db.projects.delete(id)
-    void routeIds
-    void boxIds
-  })
+  await db.transaction(
+    'rw',
+    [db.projects, db.routes, db.boxes, db.operations, db.fusions, db.powerTests, db.dropCables, db.photos, db.photoBlobs],
+    async () => {
+      // حذف عکس‌ها بر اساس هر هفت لینک (اطمینان از نبود عکس یتیم حتی با لینک مندرس)
+      const routeIds = (await db.routes.where('projectId').equals(id).toArray()).map((r) => r.id)
+      const boxIds = (await db.boxes.where('projectId').equals(id).toArray()).map((b) => b.id)
+      const opIds = (await db.operations.where('projectId').equals(id).toArray()).map((o) => o.id)
+      const fusionIds = (await db.fusions.where('projectId').equals(id).toArray()).map((f) => f.id)
+      const ptIds = (await db.powerTests.where('projectId').equals(id).toArray()).map((p) => p.id)
+      const dcIds = (await db.dropCables.where('projectId').equals(id).toArray()).map((c) => c.id)
+
+      const photoSets = await Promise.all([
+        db.photos.where('projectId').equals(id).toArray(),
+        db.photos.where('routeId').anyOf(routeIds).toArray(),
+        db.photos.where('boxId').anyOf(boxIds).toArray(),
+        db.photos.where('operationId').anyOf(opIds).toArray(),
+        db.photos.where('fusionId').anyOf(fusionIds).toArray(),
+        db.photos.where('powerTestId').anyOf(ptIds).toArray(),
+        db.photos.where('dropCableId').anyOf(dcIds).toArray(),
+      ])
+      const photoIds = [...new Set(photoSets.flat().map((p) => p.id))]
+      await db.photos.bulkDelete(photoIds)
+      await db.photoBlobs.bulkDelete(photoIds)
+
+      await db.dropCables.where('projectId').equals(id).delete()
+      await db.powerTests.where('projectId').equals(id).delete()
+      await db.fusions.where('projectId').equals(id).delete()
+      await db.operations.where('projectId').equals(id).delete()
+      await db.boxes.where('projectId').equals(id).delete()
+      await db.routes.where('projectId').equals(id).delete()
+      await db.projects.delete(id)
+    }
+  )
 }
 
 // ---------- مسیر ----------
@@ -132,23 +202,44 @@ export async function createRoute(input: RouteInput): Promise<Route> {
 }
 
 export async function updateRoute(id: string, patch: Partial<Route>): Promise<void> {
-  await db.routes.update(id, { ...patch, updatedAt: nowMs() })
+  await updateStrict(db.routes, id, { ...patch, updatedAt: nowMs() }, 'مسیر')
 }
 
 export async function setRouteArchived(id: string, archived: 0 | 1): Promise<void> {
-  await db.routes.update(id, { archived, updatedAt: nowMs() })
+  await updateStrict(db.routes, id, { archived, updatedAt: nowMs() }, 'مسیر')
 }
 
 export async function deleteRouteCascade(id: string): Promise<void> {
-  await db.transaction('rw', [db.routes, db.boxes, db.operations, db.fusions, db.powerTests, db.dropCables, db.photos], async () => {
-    await db.photos.where('routeId').equals(id).delete()
-    await db.dropCables.where('routeId').equals(id).delete()
-    await db.powerTests.where('routeId').equals(id).delete()
-    await db.fusions.where('routeId').equals(id).delete()
-    await db.operations.where('routeId').equals(id).delete()
-    await db.boxes.where('routeId').equals(id).delete()
-    await db.routes.delete(id)
-  })
+  await db.transaction(
+    'rw',
+    [db.routes, db.boxes, db.operations, db.fusions, db.powerTests, db.dropCables, db.photos, db.photoBlobs],
+    async () => {
+      const boxIds = (await db.boxes.where('routeId').equals(id).toArray()).map((b) => b.id)
+      const opIds = (await db.operations.where('routeId').equals(id).toArray()).map((o) => o.id)
+      const fusionIds = (await db.fusions.where('routeId').equals(id).toArray()).map((f) => f.id)
+      const ptIds = (await db.powerTests.where('routeId').equals(id).toArray()).map((p) => p.id)
+      const dcIds = (await db.dropCables.where('routeId').equals(id).toArray()).map((c) => c.id)
+
+      const photoSets = await Promise.all([
+        db.photos.where('routeId').equals(id).toArray(),
+        db.photos.where('boxId').anyOf(boxIds).toArray(),
+        db.photos.where('operationId').anyOf(opIds).toArray(),
+        db.photos.where('fusionId').anyOf(fusionIds).toArray(),
+        db.photos.where('powerTestId').anyOf(ptIds).toArray(),
+        db.photos.where('dropCableId').anyOf(dcIds).toArray(),
+      ])
+      const photoIds = [...new Set(photoSets.flat().map((p) => p.id))]
+      await db.photos.bulkDelete(photoIds)
+      await db.photoBlobs.bulkDelete(photoIds)
+
+      await db.dropCables.where('routeId').equals(id).delete()
+      await db.powerTests.where('routeId').equals(id).delete()
+      await db.fusions.where('routeId').equals(id).delete()
+      await db.operations.where('routeId').equals(id).delete()
+      await db.boxes.where('routeId').equals(id).delete()
+      await db.routes.delete(id)
+    }
+  )
 }
 
 // ---------- باکس ----------
@@ -161,16 +252,36 @@ export async function createBox(input: BoxInput): Promise<Box> {
 }
 
 export async function updateBox(id: string, patch: Partial<Box>): Promise<void> {
-  await db.boxes.update(id, { ...patch, updatedAt: nowMs() })
+  await updateStrict(db.boxes, id, { ...patch, updatedAt: nowMs() }, 'باکس')
+  // هم‌زمانی لینک عکس‌های باکس با والد جدید (اگر مسیر/پروژه باکس تغییر کند)
+  if (patch.projectId !== undefined || patch.routeId !== undefined) {
+    const photoPatch: Partial<Photo> = {}
+    if (patch.projectId !== undefined) photoPatch.projectId = patch.projectId
+    if (patch.routeId !== undefined) photoPatch.routeId = patch.routeId
+    await db.photos.where('boxId').equals(id).modify(photoPatch)
+  }
 }
 
 export async function setBoxArchived(id: string, archived: 0 | 1): Promise<void> {
-  await db.boxes.update(id, { archived, updatedAt: nowMs() })
+  await updateStrict(db.boxes, id, { archived, updatedAt: nowMs() }, 'باکس')
 }
 
 export async function deleteBoxCascade(id: string): Promise<void> {
-  await db.transaction('rw', [db.boxes, db.operations, db.fusions, db.powerTests, db.dropCables, db.photos], async () => {
-    await db.photos.where('boxId').equals(id).delete()
+  await db.transaction('rw', [db.boxes, db.operations, db.fusions, db.powerTests, db.dropCables, db.photos, db.photoBlobs], async () => {
+    const opIds = (await db.operations.where('boxId').equals(id).toArray()).map((o) => o.id)
+    const fusionIds = (await db.fusions.where('boxId').equals(id).toArray()).map((f) => f.id)
+    const ptIds = (await db.powerTests.where('boxId').equals(id).toArray()).map((p) => p.id)
+
+    const photoSets = await Promise.all([
+      db.photos.where('boxId').equals(id).toArray(),
+      db.photos.where('operationId').anyOf(opIds).toArray(),
+      db.photos.where('fusionId').anyOf(fusionIds).toArray(),
+      db.photos.where('powerTestId').anyOf(ptIds).toArray(),
+    ])
+    const photoIds = [...new Set(photoSets.flat().map((p) => p.id))]
+    await db.photos.bulkDelete(photoIds)
+    await db.photoBlobs.bulkDelete(photoIds)
+
     await db.dropCables.where('sourceBoxId').equals(id).delete()
     await db.powerTests.where('boxId').equals(id).delete()
     await db.fusions.where('boxId').equals(id).delete()
@@ -189,12 +300,20 @@ export async function createOperation(input: OperationInput): Promise<Operation>
 }
 
 export async function updateOperation(id: string, patch: Partial<Operation>): Promise<void> {
-  await db.operations.update(id, { ...patch, updatedAt: nowMs() })
+  await updateStrict(db.operations, id, { ...patch, updatedAt: nowMs() }, 'عملیات')
+  // هم‌زمانی لینک عکس‌های این عملیات با والدین جدید
+  if (patch.projectId !== undefined || patch.routeId !== undefined || patch.boxId !== undefined) {
+    const photoPatch: Partial<Photo> = {}
+    if (patch.projectId !== undefined) photoPatch.projectId = patch.projectId
+    if (patch.routeId !== undefined) photoPatch.routeId = patch.routeId
+    if (patch.boxId !== undefined) photoPatch.boxId = patch.boxId
+    await db.photos.where('operationId').equals(id).modify(photoPatch)
+  }
 }
 
 export async function deleteOperationCascade(id: string): Promise<void> {
-  await db.transaction('rw', [db.operations, db.photos], async () => {
-    await db.photos.where('operationId').equals(id).delete()
+  await db.transaction('rw', [db.operations, db.photos, db.photoBlobs], async () => {
+    await deletePhotosByLink('operationId', id)
     await db.operations.delete(id)
   })
 }
@@ -209,12 +328,19 @@ export async function createFusion(input: FusionInput): Promise<Fusion> {
 }
 
 export async function updateFusion(id: string, patch: Partial<Fusion>): Promise<void> {
-  await db.fusions.update(id, { ...patch, updatedAt: nowMs() })
+  await updateStrict(db.fusions, id, { ...patch, updatedAt: nowMs() }, 'فیوژن')
+  if (patch.projectId !== undefined || patch.routeId !== undefined || patch.boxId !== undefined) {
+    const photoPatch: Partial<Photo> = {}
+    if (patch.projectId !== undefined) photoPatch.projectId = patch.projectId
+    if (patch.routeId !== undefined) photoPatch.routeId = patch.routeId
+    if (patch.boxId !== undefined) photoPatch.boxId = patch.boxId
+    await db.photos.where('fusionId').equals(id).modify(photoPatch)
+  }
 }
 
 export async function deleteFusionCascade(id: string): Promise<void> {
-  await db.transaction('rw', [db.fusions, db.photos], async () => {
-    await db.photos.where('fusionId').equals(id).delete()
+  await db.transaction('rw', [db.fusions, db.photos, db.photoBlobs], async () => {
+    await deletePhotosByLink('fusionId', id)
     await db.fusions.delete(id)
   })
 }
@@ -229,12 +355,19 @@ export async function createPowerTest(input: PowerTestInput): Promise<PowerTest>
 }
 
 export async function updatePowerTest(id: string, patch: Partial<PowerTest>): Promise<void> {
-  await db.powerTests.update(id, { ...patch, updatedAt: nowMs() })
+  await updateStrict(db.powerTests, id, { ...patch, updatedAt: nowMs() }, 'تست توان')
+  if (patch.projectId !== undefined || patch.routeId !== undefined || patch.boxId !== undefined) {
+    const photoPatch: Partial<Photo> = {}
+    if (patch.projectId !== undefined) photoPatch.projectId = patch.projectId
+    if (patch.routeId !== undefined) photoPatch.routeId = patch.routeId
+    if (patch.boxId !== undefined) photoPatch.boxId = patch.boxId
+    await db.photos.where('powerTestId').equals(id).modify(photoPatch)
+  }
 }
 
 export async function deletePowerTestCascade(id: string): Promise<void> {
-  await db.transaction('rw', [db.powerTests, db.photos], async () => {
-    await db.photos.where('powerTestId').equals(id).delete()
+  await db.transaction('rw', [db.powerTests, db.photos, db.photoBlobs], async () => {
+    await deletePhotosByLink('powerTestId', id)
     await db.powerTests.delete(id)
   })
 }
@@ -249,12 +382,19 @@ export async function createDropCable(input: DropCableInput): Promise<DropCable>
 }
 
 export async function updateDropCable(id: string, patch: Partial<DropCable>): Promise<void> {
-  await db.dropCables.update(id, { ...patch, updatedAt: nowMs() })
+  await updateStrict(db.dropCables, id, { ...patch, updatedAt: nowMs() }, 'دراپ‌کابل')
+  if (patch.projectId !== undefined || patch.routeId !== undefined || patch.sourceBoxId !== undefined) {
+    const photoPatch: Partial<Photo> = {}
+    if (patch.projectId !== undefined) photoPatch.projectId = patch.projectId
+    if (patch.routeId !== undefined) photoPatch.routeId = patch.routeId
+    if (patch.sourceBoxId !== undefined) photoPatch.boxId = patch.sourceBoxId
+    await db.photos.where('dropCableId').equals(id).modify(photoPatch)
+  }
 }
 
 export async function deleteDropCableCascade(id: string): Promise<void> {
-  await db.transaction('rw', [db.dropCables, db.photos], async () => {
-    await db.photos.where('dropCableId').equals(id).delete()
+  await db.transaction('rw', [db.dropCables, db.photos, db.photoBlobs], async () => {
+    await deletePhotosByLink('dropCableId', id)
     await db.dropCables.delete(id)
   })
 }
@@ -269,13 +409,15 @@ export async function createProfile(input: ProfileInput): Promise<Profile> {
 }
 
 export async function updateProfile(id: string, patch: Partial<Profile>): Promise<void> {
-  await db.profiles.update(id, { ...patch, updatedAt: nowMs() })
+  await updateStrict(db.profiles, id, { ...patch, updatedAt: nowMs() }, 'پروفایل')
 }
 
 /**
  * حذف پروفایل — سوابق عملیات (اسنپ‌شات نام/نقش) دست‌نخورده می‌مانند.
  */
 export async function deleteProfileSafe(id: string): Promise<void> {
+  const exists = await db.profiles.get(id)
+  if (!exists) throw new RecordNotFoundError('پروفایل')
   await db.profiles.delete(id)
 }
 
@@ -293,18 +435,48 @@ function roleKeyLabel(role?: string): string {
 }
 
 // ---------- عکس ----------
-export async function savePhoto(link: PhotoLink, photo: Omit<Photo, 'id' | 'createdAt' | keyof PhotoLink>): Promise<Photo> {
-  const rec: Photo = { ...link, ...photo, id: uid(), createdAt: nowMs() }
-  await db.photos.add(rec)
+/** ذخیره عکس: متادیتا در photos + blob در photoBlobs (در یک تراکنش) */
+export async function savePhoto(
+  link: PhotoLink,
+  photo: Omit<Photo, 'id' | 'createdAt' | keyof PhotoLink> & { blob: Blob }
+): Promise<Photo> {
+  const { blob, ...meta } = photo
+  const rec: Photo = { ...link, ...meta, id: uid(), createdAt: nowMs() }
+  await db.transaction('rw', [db.photos, db.photoBlobs], async () => {
+    await db.photos.add(rec)
+    await db.photoBlobs.put({ id: rec.id, blob })
+  })
   return rec
 }
 
-export async function updatePhotoMeta(id: string, patch: { title?: string; description?: string; category?: Photo['category'] }): Promise<void> {
-  await db.photos.update(id, patch)
+/** خواندن blob اصلی عکس (فقط برای پیش‌نمایش/PDF/پشتیبان — هرگز در لیست‌ها) */
+export async function getPhotoBlob(photoId: string): Promise<Blob | undefined> {
+  const row = await db.photoBlobs.get(photoId)
+  return row?.blob
 }
 
+export async function updatePhotoMeta(
+  id: string,
+  patch: { title?: string; description?: string; category?: Photo['category'] }
+): Promise<void> {
+  await updateStrict(db.photos, id, patch, 'عکس')
+}
+
+/** حذف دسته‌ای عکس‌ها (متا + blob همیشه با هم) */
 export async function deletePhotos(ids: string[]): Promise<void> {
+  if (ids.length === 0) return
+  await db.transaction('rw', [db.photos, db.photoBlobs], async () => {
+    await db.photos.bulkDelete(ids)
+    await db.photoBlobs.bulkDelete(ids)
+  })
+}
+
+/** حذف عکس‌های متصل به یک لینک مشخص (داخل تراکنش والد) */
+async function deletePhotosByLink(linkKey: keyof PhotoLink, linkValue: string): Promise<void> {
+  const photos = await db.photos.where(linkKey).equals(linkValue).toArray()
+  const ids = photos.map((p) => p.id)
   await db.photos.bulkDelete(ids)
+  await db.photoBlobs.bulkDelete(ids)
 }
 
 export async function getProjectPhotoCount(projectId: string): Promise<number> {
@@ -313,25 +485,30 @@ export async function getProjectPhotoCount(projectId: string): Promise<number> {
 
 // ---------- آمار داشبورد (داده واقعی؛ بدون داده ساختگی) ----------
 export interface DashboardStats {
-  projectsTotal: number
-  projectsActive: number
+  projectsTotal: number // غیرآرشیو
+  projectsTotalAll: number // شامل آرشیو (برای تشخیص خالی‌بودن واقعی)
+  projectsActive: number // در حال اجرا
   routes: number
   boxes: number
   operations: number
-  operationsThisMonth: number
+  operationsThisMonth: number // ماه شمسی جاری
   fusions: number
   powerTests: number
   dropCables: number
   consumedMetersTotal: number
   photoCount: number
   profiles: number
+  /** عملیات ۶ ماه شمسی اخیر — برای نمودار داشبورد */
+  operationsByMonth: Array<{ label: string; count: number }>
+  /** توزیع وضعیت پروژه‌ها — برای نمودار داشبورد */
+  projectStatusCounts: Array<{ status: ProjectStatus; count: number }>
 }
 
 export async function getDashboardStats(): Promise<DashboardStats> {
-  const [projectsTotal, projectsActive, routes, boxes, operations, fusions, powerTests, dropCables, photoCount, profiles] =
+  const [projectsTotal, projectsTotalAll, routes, boxes, operations, fusions, powerTests, dropCables, photoCount, profiles] =
     await Promise.all([
       db.projects.filter((p) => !p.archived).count(),
-      db.projects.filter((p) => !p.archived && p.status === 'in_progress').count(),
+      db.projects.count(),
       db.routes.filter((r) => !r.archived).count(),
       db.boxes.filter((b) => !b.archived).count(),
       db.operations.count(),
@@ -342,21 +519,50 @@ export async function getDashboardStats(): Promise<DashboardStats> {
       db.profiles.count(),
     ])
 
-  const monthStart = new Date()
-  monthStart.setDate(1)
-  monthStart.setHours(0, 0, 0, 0)
-  const operationsThisMonth = await db.operations.filter((o) => o.createdAt >= monthStart.getTime()).count()
+  // ماه شمسی جاری (نه میلادی)
+  const todayJ = isoToJalali(todayISO())!
+  const monthWin = jalaliMonthWindow(todayJ.jy, todayJ.jm)
+  const operationsThisMonth = await db.operations.filter((o) => o.createdAt >= monthWin.start && o.createdAt < monthWin.end).count()
 
-  const cables = await db.dropCables.toArray()
+  // ۶ ماه شمسی اخیر
+  const operationsByMonth: Array<{ label: string; count: number }> = []
+  {
+    let jy = todayJ.jy
+    let jm = todayJ.jm
+    const windows: Array<{ label: string; start: number; end: number }> = []
+    for (let i = 0; i < 6; i++) {
+      const win = jalaliMonthWindow(jy, jm)
+      windows.push({ label: jalaliMonthNames[jm - 1]!, start: win.start, end: win.end })
+      jm--
+      if (jm < 1) {
+        jm = 12
+        jy--
+      }
+    }
+    windows.reverse()
+    const counts = await Promise.all(
+      windows.map((w) => db.operations.filter((o) => o.createdAt >= w.start && o.createdAt < w.end).count())
+    )
+    windows.forEach((w, i) => operationsByMonth.push({ label: w.label, count: counts[i] ?? 0 }))
+  }
+
+  // توزیع وضعیت پروژه‌ها (غیرآرشیو)
+  const projects = await db.projects.filter((p) => !p.archived).toArray()
+  const statusMap = new Map<ProjectStatus, number>()
+  for (const p of projects) statusMap.set(p.status, (statusMap.get(p.status) ?? 0) + 1)
+  const projectStatusCounts = [...statusMap.entries()].map(([status, count]) => ({ status, count }))
+
+  // مجموع متراژ مصرفی — با cursor (بدون بارگذاری همه رکوردها در RAM)
   let consumedMetersTotal = 0
-  for (const c of cables) {
+  await db.dropCables.each((c) => {
     const res: ConsumedResult = computeConsumed(c.initialMeters, c.returnedMeters, c.consumedUser)
     if (res.valid && res.value !== undefined) consumedMetersTotal += res.value
-  }
+  })
 
   return {
     projectsTotal,
-    projectsActive,
+    projectsTotalAll,
+    projectsActive: projects.filter((p) => p.status === 'in_progress').length,
     routes,
     boxes,
     operations,
@@ -367,6 +573,8 @@ export async function getDashboardStats(): Promise<DashboardStats> {
     consumedMetersTotal,
     photoCount,
     profiles,
+    operationsByMonth,
+    projectStatusCounts,
   }
 }
 
@@ -392,12 +600,14 @@ export async function getProjectStats(projectId: string): Promise<ProjectStats> 
     db.dropCables.where('projectId').equals(projectId).count(),
     db.photos.where('projectId').equals(projectId).count(),
   ])
-  const cables = await db.dropCables.where('projectId').equals(projectId).toArray()
   let consumedMeters = 0
-  for (const c of cables) {
-    const res = computeConsumed(c.initialMeters, c.returnedMeters, c.consumedUser)
-    if (res.valid && res.value !== undefined) consumedMeters += res.value
-  }
+  await db.dropCables
+    .where('projectId')
+    .equals(projectId)
+    .each((c) => {
+      const res = computeConsumed(c.initialMeters, c.returnedMeters, c.consumedUser)
+      if (res.valid && res.value !== undefined) consumedMeters += res.value
+    })
   return { routes, boxes, operations, fusions, powerTests, dropCables, photos, consumedMeters }
 }
 
@@ -405,7 +615,7 @@ export async function getProjectStats(projectId: string): Promise<ProjectStats> 
 export async function resetAllData(): Promise<void> {
   await db.transaction(
     'rw',
-    [db.projects, db.routes, db.boxes, db.operations, db.fusions, db.powerTests, db.dropCables, db.profiles, db.photos, db.settings],
+    [db.projects, db.routes, db.boxes, db.operations, db.fusions, db.powerTests, db.dropCables, db.profiles, db.photos, db.photoBlobs],
     async () => {
       await Promise.all([
         db.projects.clear(),
@@ -417,6 +627,7 @@ export async function resetAllData(): Promise<void> {
         db.dropCables.clear(),
         db.profiles.clear(),
         db.photos.clear(),
+        db.photoBlobs.clear(),
       ])
     }
   )

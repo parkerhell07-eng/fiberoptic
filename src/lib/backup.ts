@@ -1,13 +1,22 @@
 // فایبرکار — پشتیبان‌گیری و بازیابی کامل (پایگاه داده + عکس‌ها + ارتباط‌ها)
 // فایل پشتیبان: JSON با نسخه‌بندی و checksum (SHA-256) برای بررسی سلامت.
-import type { BackupTableName, LastBackupInfo, Photo } from './types'
+//
+// v1.1:
+//  - بازیابی «جایگزینی کامل» اتمی است: همه‌چیز داخل یک تراکنش Dexie —
+//    اگر وسط کار خطایی رخ دهد، داده‌های قبلی دست‌نخورده برمی‌گردند.
+//  - ساخت پشتیبان با حافظه بهینه (استخر محدود برای تبدیل عکس‌ها، stringify یک‌باره)
+//  - پشتیبانی از قالب قدیمی (blob داخل رکورد عکس) و قالب جدید (photoBlobs)
+//  - گزارش پیشرفت مرحله‌به‌مرحله برای UI
+import type { BackupTableName, LastBackupInfo, Photo, PhotoBlobRow } from './types'
 import { BACKUP_TABLES } from './types'
-import { db, getDb, resetAllData, setSetting } from './localdb'
+import { db, getDb, setSetting } from './localdb'
 import { blobToDataUrl, dataUrlToBlob } from './images'
-import { isNativeApp, nativeSaveFile } from './native-bridge'
+import { isNativeApp, nativeSaveFile, nativeShareOrSaveFile } from './native-bridge'
 
 export const BACKUP_VERSION = 1
 const CHECKSUM_KEY = '__checksum'
+
+const ALL_TABLES = [...BACKUP_TABLES] as const
 
 interface BackupPayload {
   app: 'fiberkar'
@@ -35,19 +44,69 @@ async function sha256Hex(text: string): Promise<string> {
     .join('')
 }
 
+/** اجرای کارها با هم‌زمانی محدود (کنترل حافظه برای تبدیل عکس‌ها) */
+async function mapPool<T, R>(items: T[], poolSize: number, fn: (item: T, index: number) => Promise<R>): Promise<R[]> {
+  const results = new Array<R>(items.length)
+  let next = 0
+  const workers = Array.from({ length: Math.min(poolSize, items.length) }, async () => {
+    while (true) {
+      const i = next++
+      if (i >= items.length) return
+      results[i] = await fn(items[i]!, i)
+    }
+  })
+  await Promise.all(workers)
+  return results
+}
+
 // ---------- ساخت پشتیبان ----------
 export interface CreateBackupResult {
   blob: Blob
   info: LastBackupInfo
 }
 
-export async function createBackupBlob(): Promise<CreateBackupResult> {
+export type BackupPhase = 'read' | 'photos' | 'finalize'
+
+export async function createBackupBlob(
+  onProgress?: (phase: BackupPhase, done: number, total: number) => void
+): Promise<CreateBackupResult> {
+  onProgress?.('read', 0, ALL_TABLES.length)
   const tables: Record<string, unknown[]> = {}
-  for (const name of BACKUP_TABLES) {
+  let step = 0
+  for (const name of ALL_TABLES) {
     const table = getDb().table(name)
     tables[name] = await table.toArray()
+    step++
+    onProgress?.('read', step, ALL_TABLES.length)
   }
 
+  // عکس‌ها: blob → dataURL با استخر محدود (حافظه امن روی دستگاه‌های ضعیف)
+  const photos = (tables.photos as Photo[]) ?? []
+  const blobRows = (tables.photoBlobs as PhotoBlobRow[]) ?? []
+  const blobById = new Map(blobRows.map((r) => [r.id, r.blob]))
+
+  onProgress?.('photos', 0, photos.length)
+  let photoDone = 0
+  const photosWithBlobs = await mapPool(photos, 4, async (p) => {
+    const blob = blobById.get(p.id)
+    let dataUrl = ''
+    if (blob) {
+      try {
+        dataUrl = await blobToDataUrl(blob)
+      } catch {
+        dataUrl = '' // عکس خوانده نشد — رکورد بدون تصویر در پشتیبان می‌آید
+      }
+    }
+    photoDone++
+    onProgress?.('photos', photoDone, photos.length)
+    const { ...rest } = p as Photo & { blob?: unknown }
+    delete rest.blob // اگر به هر دلیل blob در رکورد بود، در JSON نمی‌رود
+    return dataUrl ? { ...rest, blob: dataUrl } : { ...rest }
+  })
+  tables.photos = photosWithBlobs
+  tables.photoBlobs = [] // blobها داخل رکورد عکس با dataURL ذخیره شده‌اند
+
+  onProgress?.('finalize', 0, 1)
   const payload: BackupPayload = {
     app: 'fiberkar',
     version: BACKUP_VERSION,
@@ -55,26 +114,19 @@ export async function createBackupBlob(): Promise<CreateBackupResult> {
     tables,
   }
 
-  // عکس‌ها به dataURL تبدیل می‌شوند تا در فایل JSON قابل ذخیره باشند
-  const photos = (tables.photos as Photo[]) || []
-  const photosWithBlobs = await Promise.all(
-    photos.map(async (p) => ({
-      ...p,
-      blob: await blobToDataUrl(p.blob),
-    }))
-  )
-  payload.tables.photos = photosWithBlobs
-
+  // فقط یک stringify — checksum روی همان رشته و درج checksum بدون ساخت رشته دوم
   const json = JSON.stringify(payload)
   const checksum = await sha256Hex(json)
-  const file: BackupFile = { ...payload, [CHECKSUM_KEY]: checksum }
-  const blob = new Blob([JSON.stringify(file)], { type: 'application/json' })
+  const fileJson = `${json.slice(0, -1)},"${CHECKSUM_KEY}":"${checksum}"}`
+  const blob = new Blob([fileJson], { type: 'application/json' })
 
   const counts: Record<string, number> = {}
-  for (const name of BACKUP_TABLES) counts[name] = (tables[name] as unknown[]).length
+  for (const name of ALL_TABLES) counts[name] = (tables[name] as unknown[]).length
+  delete counts.photoBlobs // داخل رکورد عکس‌هاست
   const info: LastBackupInfo = { time: payload.createdAt, size: blob.size, checksum, counts }
   await setSetting('lastBackup', info)
 
+  onProgress?.('finalize', 1, 1)
   return { blob, info }
 }
 
@@ -87,30 +139,37 @@ export interface VerifyResult {
   error?: string
 }
 
-export async function verifyBackupBlob(blob: Blob): Promise<VerifyResult> {
+/** بررسی + پارس یک‌باره (جلوگیری از دو بار خواندن/پارس فایل‌های بزرگ) */
+export async function verifyAndParseBackupBlob(blob: Blob): Promise<{ verify: VerifyResult; file?: BackupFile }> {
   try {
     const text = await blob.text()
     let file: BackupFile
     try {
       file = JSON.parse(text) as BackupFile
     } catch {
-      return { ok: false, error: 'فایل پشتیبان قابل خواندن نیست (JSON نامعتبر)' }
+      return { verify: { ok: false, error: 'فایل پشتیبان قابل خواندن نیست (JSON نامعتبر)' } }
     }
-    if (file.app !== 'fiberkar') return { ok: false, error: 'این فایل پشتیبان فیبرکار نیست' }
-    if (!file.version) return { ok: false, error: 'نسخه فایل پشتیبان نامعتبر است' }
+    if (file.app !== 'fiberkar') return { verify: { ok: false, error: 'این فایل پشتیبان فیبرکار نیست' } }
+    if (!file.version) return { verify: { ok: false, error: 'نسخه فایل پشتیبان نامعتبر است' } }
     if (file.version > BACKUP_VERSION)
-      return { ok: false, error: `نسخه فایل (v${file.version}) جدیدتر از نسخه برنامه (v${BACKUP_VERSION}) است` }
+      return { verify: { ok: false, error: `نسخه فایل (v${file.version}) جدیدتر از نسخه برنامه (v${BACKUP_VERSION}) است` } }
 
     const { [CHECKSUM_KEY]: checksum, ...rest } = file
     const computed = await sha256Hex(JSON.stringify(rest))
-    if (computed !== checksum) return { ok: false, error: 'فایل پشتیبان خراب یا دستکاری‌شده است (عدم تطابق checksum)' }
+    if (computed !== checksum)
+      return { verify: { ok: false, error: 'فایل پشتیبان خراب یا دستکاری‌شده است (عدم تطابق checksum)' } }
 
     const counts: Record<string, number> = {}
-    for (const name of BACKUP_TABLES) counts[name] = ((rest.tables?.[name] as unknown[]) ?? []).length
-    return { ok: true, version: file.version, createdAt: file.createdAt, counts }
+    for (const name of ALL_TABLES) counts[name] = ((rest.tables?.[name] as unknown[]) ?? []).length
+    return { verify: { ok: true, version: file.version, createdAt: file.createdAt, counts }, file }
   } catch (e) {
-    return { ok: false, error: `بررسی فایل ممکن نشد: ${(e as Error).message}` }
+    return { verify: { ok: false, error: `بررسی فایل ممکن نشد: ${(e as Error).message}` } }
   }
+}
+
+export async function verifyBackupBlob(blob: Blob): Promise<VerifyResult> {
+  const { verify } = await verifyAndParseBackupBlob(blob)
+  return verify
 }
 
 // ---------- بازیابی ----------
@@ -120,61 +179,124 @@ export interface RestoreResult {
   mode: 'replace' | 'merge'
 }
 
-/**
- * بازیابی پشتیبان.
- * mode 'replace': پاک‌سازی کامل داده‌های فعلی و جایگزینی (پیش از فراخوانی باید کاربر هشدار را تأیید کند)
- * mode 'merge': افزودن رکوردهایی که شناسه تکراری ندارند (بدون جایگزینی کامل)
- */
-export async function restoreBackup(blob: Blob, mode: 'replace' | 'merge'): Promise<RestoreResult> {
-  const verify = await verifyBackupBlob(blob)
-  if (!verify.ok) throw new Error(verify.error || 'فایل پشتیبان معتبر نیست')
+export type RestorePhase = 'validate' | 'photos' | 'write'
 
-  const file = JSON.parse(await blob.text()) as BackupFile
+/**
+ * بازیابی پشتیبان (اتمی).
+ * mode 'replace': پاک‌سازی کامل داده‌های فعلی و جایگزینی — همه داخل یک تراکنش؛
+ *   اگر خطایی رخ دهد، هیچ‌چیز تغییر نمی‌کند.
+ * mode 'merge': افزودن رکوردهایی که شناسه تکراری ندارند — همین‌طور اتمی.
+ */
+export async function restoreBackup(
+  blob: Blob,
+  mode: 'replace' | 'merge',
+  onProgress?: (phase: RestorePhase, done: number, total: number) => void
+): Promise<RestoreResult> {
+  onProgress?.('validate', 0, 1)
+  const { verify, file } = await verifyAndParseBackupBlob(blob)
+  if (!verify.ok) throw new Error(verify.error || 'فایل پشتیبان معتبر نیست')
+  if (!file) throw new Error('فایل پشتیبان قابل خواندن نیست')
+  onProgress?.('validate', 1, 1)
+
   const restored: Record<string, number> = {}
   const skipped: Record<string, number> = {}
 
-  if (mode === 'replace') {
-    await resetAllData()
+  // ۱) آماده‌سازی رکورد عکس‌ها بیرون از تراکنش (dataURL → Blob با استخر محدود)
+  onProgress?.('photos', 0, 1)
+  const preparedPhotos: Photo[] = []
+  const preparedBlobRows: PhotoBlobRow[] = []
+  let photoSkipped = 0
+
+  const legacyPhotos = ((file.tables?.photos as unknown[]) ?? []) as Array<Photo & { blob?: string | Blob }>
+  const backupBlobRows = ((file.tables?.photoBlobs as unknown[]) ?? []) as Array<PhotoBlobRow & { blob?: string }>
+  // قالب قدیمی: blob به‌صورت dataURL داخل رکورد عکس
+  const photoDataUrls = new Map<string, string | Blob>()
+  for (const p of legacyPhotos) {
+    if (typeof p?.id === 'string' && p.blob) photoDataUrls.set(p.id, p.blob)
   }
+  // قالب جدید: ردیف‌های photoBlobs با dataURL
+  for (const row of backupBlobRows) {
+    if (typeof row?.id === 'string' && row.blob && !photoDataUrls.has(row.id)) {
+      photoDataUrls.set(row.id, row.blob)
+    }
+  }
+  const idsToConvert = [...photoDataUrls.keys()]
+  const converted = new Map<string, Blob>()
+  let done = 0
+  await mapPool(idsToConvert, 4, async (id) => {
+    const src = photoDataUrls.get(id)
+    if (typeof src !== 'string') return
+    try {
+      converted.set(id, await dataUrlToBlob(src))
+    } catch {
+      /* عکس خراب — در ادامه رکورد بدون blob یا حذف می‌شود */
+    }
+    done++
+    onProgress?.('photos', done, idsToConvert.length)
+  })
 
-  for (const name of BACKUP_TABLES) {
-    const rows = (file.tables?.[name] as unknown[]) ?? []
-    let okCount = 0
-    let skipCount = 0
+  for (const p of legacyPhotos) {
+    if (typeof p?.id !== 'string' || !p.id) {
+      photoSkipped++
+      continue
+    }
+    const { blob: _removed, ...meta } = p
+    const b = converted.get(p.id)
+    if (b) {
+      preparedPhotos.push(meta as Photo)
+      preparedBlobRows.push({ id: p.id, blob: b })
+    } else if (photoDataUrls.has(p.id)) {
+      photoSkipped++ // عکس بدون blob قابل بازیابی — رکورد کامل ناقص می‌ماند؛ ثبت نمی‌شود
+    } else {
+      // عکس اصلان blob نداشته (نادر) — متا ثبت می‌شود تا اشاره‌گر از دست نرود
+      preparedPhotos.push({ ...(meta as Photo), thumb: meta.thumb ?? '' })
+    }
+  }
+  onProgress?.('photos', idsToConvert.length, idsToConvert.length)
 
-    const prepared: unknown[] = []
-    if (name === 'photos') {
-      for (const raw of rows as Photo[]) {
-        try {
-          prepared.push({ ...raw, blob: await dataUrlToBlob(raw.blob as unknown as string) })
-        } catch {
-          skipCount++ // عکس خراب؛ رکورد بدون عکس ثبت نمی‌شود تا «فایل بی‌صاحب» ایجاد نشود
+  // ۲) نوشتن اتمی همه جدول‌ها در یک تراکنش
+  onProgress?.('write', 0, ALL_TABLES.length)
+  await db.transaction('rw', ALL_TABLES.map((n) => getDb().table(n)), async () => {
+    if (mode === 'replace') {
+      for (const name of ALL_TABLES) await getDb().table(name).clear()
+    }
+    let wstep = 0
+    for (const name of ALL_TABLES) {
+      const table = getDb().table(name)
+      let rows: unknown[] = []
+      let skipCount = 0
+
+      if (name === 'photos') {
+        rows = preparedPhotos
+      } else if (name === 'photoBlobs') {
+        rows = preparedBlobRows
+        skipCount = photoSkipped
+      } else {
+        const raw = (file.tables?.[name] as unknown[]) ?? []
+        if (mode === 'merge') {
+          const existing = new Set(((await table.toArray()) as Array<{ id?: string }>).map((r) => r.id))
+          for (const r of raw) {
+            const id = (r as { id?: string })?.id
+            if (typeof id === 'string' && id && !existing.has(id)) rows.push(r)
+            else skipCount++
+          }
+        } else {
+          // فقط رکوردهای دارای شناسه معتبر
+          for (const r of raw) {
+            const id = (r as { id?: string })?.id
+            if (typeof id === 'string' && id) rows.push(r)
+            else skipCount++
+          }
         }
       }
-    } else {
-      prepared.push(...rows)
-    }
 
-    const table = getDb().table(name)
-    if (mode === 'merge') {
-      const existing = new Set((await table.toArray()).map((r: { id?: string }) => r.id))
-      const toAdd = prepared.filter((r) => {
-        const id = (r as { id?: string }).id
-        if (id && existing.has(id)) {
-          skipCount++
-          return false
-        }
-        return true
-      })
-      await table.bulkAdd(toAdd)
-      okCount = toAdd.length
-    } else {
-      await table.bulkAdd(prepared)
-      okCount = prepared.length
+      if (rows.length > 0) await table.bulkPut(rows)
+      restored[name] = rows.length
+      skipped[name] = skipCount
+      wstep++
+      onProgress?.('write', wstep, ALL_TABLES.length)
     }
-    restored[name] = okCount
-    skipped[name] = skipCount
-  }
+  })
 
   await setSetting('lastRestore', { time: Date.now(), mode, restored, skipped })
   return { restored, skipped, mode }
@@ -184,11 +306,19 @@ export async function restoreBackup(blob: Blob, mode: 'replace' | 'merge'): Prom
 export async function saveBlobToDisk(
   blob: Blob,
   suggestedName: string
-): Promise<'picker' | 'download'> {
-  // داخل اپ اندروید (APK): ذخیره مستقیم در پوشه اسناد دستگاه
+): Promise<'picker' | 'download' | 'shared'> {
+  // داخل اپ اندروید (APK): اول تلاش برای ذخیره در اسناد؛ در خطا مسیر اشتراک (همیشه کار می‌کند)
   if (isNativeApp()) {
-    await nativeSaveFile(blob, suggestedName)
-    return 'download'
+    try {
+      await nativeSaveFile(blob, suggestedName)
+      return 'download'
+    } catch {
+      const result = await nativeShareOrSaveFile(blob, suggestedName)
+      if (result === 'failed') {
+        throw new Error('ذخیره فایل ممکن نشد؛ اشتراک‌گذاری هم ناموفق بود')
+      }
+      return 'shared'
+    }
   }
   type PickerWindow = Window & {
     showSaveFilePicker?: (opts?: { suggestedName?: string; types?: Array<{ description: string; accept: Record<string, string[]> }> }) => Promise<{
@@ -228,6 +358,3 @@ export function backupFileName(): string {
   const p = (x: number) => String(x).padStart(2, '0')
   return `fiberkar-backup-${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}.json`
 }
-
-// خاموش کردن lint برای استفاده مستقیم db در این ماژول
-void db

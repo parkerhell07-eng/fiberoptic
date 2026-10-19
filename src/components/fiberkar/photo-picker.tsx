@@ -15,6 +15,7 @@ import {
 import { processImageFile } from '@/lib/images'
 import { savePhoto } from '@/lib/localdb'
 import { messages } from '@/lib/labels'
+import { formatJalaliDateTime, toFa } from '@/lib/persian'
 import type { Photo, PhotoCategory, PhotoLink } from '@/lib/types'
 
 export function PhotoPickerButton({
@@ -46,12 +47,14 @@ export function PhotoPickerButton({
     if (!files || files.length === 0) return
     setBusy(true)
     const saved: Photo[] = []
+    let failures = 0
     try {
+      // هر فایل مستقل پردازش/ذخیره می‌شود؛ خطای یک فایل کل دسته را از کار نمی‌اندازد
       for (const file of Array.from(files)) {
         if (!file.type.startsWith('image/')) continue
-        const processed = await processImageFile(file)
-        const title = `${baseTitle ? baseTitle + ' ' : ''}${new Date().toLocaleString('fa-IR')}`
         try {
+          const processed = await processImageFile(file)
+          const title = `${baseTitle ? baseTitle + ' — ' : ''}${formatJalaliDateTime(Date.now())}`
           const rec = await savePhoto(link, {
             category,
             title,
@@ -65,12 +68,22 @@ export function PhotoPickerButton({
           })
           saved.push(rec)
         } catch (e) {
+          failures++
           if ((e as Error)?.name === 'QuotaExceededError') toast.error(messages.storageFull)
           else toast.error(messages.error)
         }
       }
-      if (saved.length > 0) toast.success(`${messages.photoSaved} (${saved.length})`)
-      onSaved?.(saved)
+      if (failures > 0) {
+        toast.error(`ثبت ${toFa(failures)} عکس ناموفق بود`)
+        if (saved.length > 0) toast.success(`${messages.photoSaved} (${toFa(saved.length)})`)
+      } else if (saved.length > 0) {
+        toast.success(`${messages.photoSaved} (${toFa(saved.length)})`)
+      }
+      try {
+        onSaved?.(saved)
+      } catch {
+        // خطا در پاسخ به ذخیره نباید جریان ثبت عکس را بشکند
+      }
     } finally {
       setBusy(false)
       if (cameraRef.current) cameraRef.current.value = ''

@@ -7,10 +7,12 @@ import { useLiveQuery } from 'dexie-react-hooks'
 import {
   Box as BoxIcon,
   Cable,
+  ChevronDown,
   ChevronLeft,
   ClipboardList,
   FolderKanban,
   Gauge,
+  Image as ImageIcon,
   Route as RouteIcon,
   Search,
   SearchX,
@@ -37,13 +39,14 @@ import {
   operationStatusLabels,
   operationStatusVariants,
   operationTypeLabels,
+  photoCategoryLabels,
   profileRoleLabels,
   projectStatusLabels,
   projectStatusVariants,
   viewTitles,
 } from '@/lib/labels'
-import { formatJalali, formatNum, toEnDigits, toFa } from '@/lib/persian'
-import type { Box, DropCable, Fusion, Operation, PowerTest, Profile, Project, Route } from '@/lib/types'
+import { formatBytes, formatJalali, formatNum, normalizeFa, toFa } from '@/lib/persian'
+import type { Box, DropCable, Fusion, Operation, Photo, PowerTest, Profile, Project, Route } from '@/lib/types'
 import { useAppStore } from '@/store/app-store'
 
 type TypeFilter =
@@ -56,6 +59,7 @@ type TypeFilter =
   | 'powerTests'
   | 'dropCables'
   | 'profiles'
+  | 'photos'
 
 const TYPE_OPTIONS: Array<{ value: TypeFilter; label: string }> = [
   { value: 'all', label: 'همه' },
@@ -67,6 +71,7 @@ const TYPE_OPTIONS: Array<{ value: TypeFilter; label: string }> = [
   { value: 'powerTests', label: 'تست توان' },
   { value: 'dropCables', label: 'دراپ‌کابل' },
   { value: 'profiles', label: 'پروفایل‌ها' },
+  { value: 'photos', label: 'عکس‌ها' },
 ]
 
 // گزینه‌های وضعیت: اجتماع برچسب‌های وضعیت پروژه/عملیات/باکس/نصب (بدون تکرار)
@@ -88,6 +93,7 @@ interface SearchGroups {
   powerTests: PowerTest[]
   dropCables: DropCable[]
   profiles: Profile[]
+  photos: Photo[]
 }
 
 const EMPTY_GROUPS: SearchGroups = {
@@ -99,6 +105,7 @@ const EMPTY_GROUPS: SearchGroups = {
   powerTests: [],
   dropCables: [],
   profiles: [],
+  photos: [],
 }
 
 // بازیابی آخرین جست‌وجوی این نشست (حفظ متن و فیلترها هنگام بازگشت به صفحه)
@@ -149,6 +156,26 @@ function GroupSection({
       </div>
       <div className="space-y-2">{children}</div>
     </section>
+  )
+}
+
+// سقف نمایش هر گروه — بقیه با «نمایش موارد بیشتر» باز می‌شوند
+const GROUP_CAP = 30
+
+function GroupResults<T>({ items, renderItem }: { items: T[]; renderItem: (item: T, index: number) => React.ReactNode }) {
+  const [expanded, setExpanded] = React.useState(false)
+  const shown = expanded ? items : items.slice(0, GROUP_CAP)
+  const hidden = items.length - shown.length
+  return (
+    <>
+      {shown.map((item, i) => renderItem(item, i))}
+      {hidden > 0 && (
+        <Button variant="outline" size="sm" className="min-h-9 w-full" onClick={() => setExpanded(true)}>
+          <ChevronDown className="size-4" aria-hidden />
+          نمایش موارد بیشتر ({toFa(hidden)} مورد دیگر)
+        </Button>
+      )}
+    </>
   )
 }
 
@@ -205,10 +232,11 @@ export default function SearchView() {
 
   // واکشی و فیلتر زنده داده‌ها (مقیاس محلی؛ واکشی کامل جدول‌ها سریع است)
   const results = useLiveQuery<SearchGroups | undefined>(async () => {
-    const needle = toEnDigits(q).trim().toLowerCase()
-    if (!needle) return EMPTY_GROUPS // بدون عبارت، فقط راهنما نمایش داده می‌شود
+    // نرمال‌سازی فارسی: ي/ی، ك/ک، نیم‌فاصله، اعراب، ارقام و حروف کوچک — هم سوزن هم انبار
+    const tokens = normalizeFa(q).split(/\s+/).filter(Boolean)
+    if (tokens.length === 0) return EMPTY_GROUPS // بدون عبارت، فقط راهنما نمایش داده می‌شود
 
-    const [projects, routes, boxes, operations, fusions, powerTests, dropCables, profiles] = await Promise.all([
+    const [projects, routes, boxes, operations, fusions, powerTests, dropCables, profiles, photos] = await Promise.all([
       db.projects.toArray(),
       db.routes.toArray(),
       db.boxes.toArray(),
@@ -217,6 +245,8 @@ export default function SearchView() {
       db.powerTests.toArray(),
       db.dropCables.toArray(),
       db.profiles.toArray(),
+      // فقط متادیتا — blob عکس‌ها هرگز به RAM نمی‌آید
+      db.photos.toArray(),
     ])
 
     const hasStatusFilter = statusFilter !== 'all'
@@ -230,27 +260,30 @@ export default function SearchView() {
     const createdOk = (ms: number) => dateOk(msToISODate(ms))
     const statusOk = (label: string) => !hasStatusFilter || label === statusFilter
     const archOk = (r: { archived: 0 | 1 }) => includeArchived || r.archived !== 1
+    // تطبیق چندواژه‌ای (AND): هر توکن باید در انبار متن رکورد باشد
     const textOk = (fields: Array<string | number | undefined>) => {
-      const hay = fields.map((f) => toEnDigits(String(f ?? '')).toLowerCase()).join('\n')
-      return hay.includes(needle)
+      const hay = normalizeFa(fields.map((f) => String(f ?? '')).join(' '))
+      return tokens.every((t) => hay.includes(t))
     }
 
     const fp = projects.filter(
-      (p) => archOk(p) && createdOk(p.createdAt) && statusOk(projectStatusLabels[p.status]) && textOk([p.name, p.code, p.client, p.area, p.description])
+      (p) => archOk(p) && createdOk(p.createdAt) && statusOk(projectStatusLabels[p.status] ?? 'نامشخص') && textOk([p.name, p.code, p.client, p.area, p.description])
     )
     const fr = routes.filter((r) => archOk(r) && createdOk(r.createdAt) && textOk([r.name, r.code, r.description]))
     const fb = boxes.filter(
-      (b) => archOk(b) && createdOk(b.createdAt) && statusOk(boxStatusLabels[b.status]) && textOk([b.number, b.location, b.cableSpec, b.description])
+      (b) => archOk(b) && createdOk(b.createdAt) && statusOk(boxStatusLabels[b.status] ?? 'نامشخص') && textOk([b.number, b.location, b.cableSpec, b.description])
     )
     const fo = operations.filter(
-      (o) => dateOk(o.date) && statusOk(operationStatusLabels[o.status]) && textOk([o.title, o.description, o.assigneeName, o.customTypeLabel, o.techSpecs])
+      (o) => dateOk(o.date) && statusOk(operationStatusLabels[o.status] ?? 'نامشخص') && textOk([o.title, o.description, o.assigneeName, o.customTypeLabel, o.techSpecs])
     )
     const ff = fusions.filter((f) => dateOk(f.fusionDate) && textOk([f.fiberNumbers, f.tubeNumber, f.cableSpec, f.connectionId, f.deviceModel, f.result, f.description]))
     const ftp = powerTests.filter((t) => dateOk(t.date) && textOk([t.location, t.deviceModel, t.description]))
     const fd = dropCables.filter(
-      (c) => dateOk(c.date) && statusOk(installStatusLabels[c.installStatus]) && textOk([c.destination, c.serviceId, c.address, c.executorName, c.cableType, c.description])
+      (c) => dateOk(c.date) && statusOk(installStatusLabels[c.installStatus] ?? 'نامشخص') && textOk([c.destination, c.serviceId, c.address, c.executorName, c.cableType, c.description])
     )
     const fpr = profiles.filter((p) => textOk([p.firstName, p.lastName, p.company, p.city]))
+    // جست‌وجوی عکس‌ها بر اساس عنوان/توضیح/برچسب دسته (فقط متا)
+    const fph = photos.filter((p) => createdOk(p.createdAt) && textOk([p.title, p.description, photoCategoryLabels[p.category] ?? 'نامشخص']))
 
     const on = (t: TypeFilter) => typeFilter === 'all' || typeFilter === t
     return {
@@ -262,6 +295,7 @@ export default function SearchView() {
       powerTests: on('powerTests') ? ftp : [],
       dropCables: on('dropCables') ? fd : [],
       profiles: on('profiles') ? fpr : [],
+      photos: on('photos') ? fph : [],
     }
   }, [q, typeFilter, statusFilter, fromDate, toDate, includeArchived])
 
@@ -274,7 +308,8 @@ export default function SearchView() {
     groups.fusions.length +
     groups.powerTests.length +
     groups.dropCables.length +
-    groups.profiles.length
+    groups.profiles.length +
+    groups.photos.length
   const groupCount = [
     groups.projects,
     groups.routes,
@@ -284,13 +319,14 @@ export default function SearchView() {
     groups.powerTests,
     groups.dropCables,
     groups.profiles,
+    groups.photos,
   ].filter((a) => a.length > 0).length
 
   return (
     <div className="space-y-4">
       <PageHeader
         title={viewTitles.search}
-        subtitle="جست‌وجو در پروژه‌ها، مسیرها، باکس‌ها، عملیات و پروفایل‌ها"
+        subtitle="جست‌وجو در پروژه‌ها، مسیرها، باکس‌ها، عملیات، پروفایل‌ها و عکس‌ها"
         onBack={back}
       />
 
@@ -361,11 +397,12 @@ export default function SearchView() {
           </div>
           <div className="flex min-w-40 flex-1 flex-col gap-1.5">
             <Label className="text-xs text-muted-foreground">از تاریخ</Label>
-            <JalaliDatePicker value={fromDate} onChange={setFromDate} placeholder="از ابتدا" />
+            {/* کلامپ بازه نامعتبر: «از» نمی‌تواند بعد از «تا» باشد */}
+            <JalaliDatePicker value={fromDate} onChange={setFromDate} maxIso={toDate} placeholder="از ابتدا" />
           </div>
           <div className="flex min-w-40 flex-1 flex-col gap-1.5">
             <Label className="text-xs text-muted-foreground">تا تاریخ</Label>
-            <JalaliDatePicker value={toDate} onChange={setToDate} placeholder="تا امروز" />
+            <JalaliDatePicker value={toDate} onChange={setToDate} minIso={fromDate} placeholder="تا امروز" />
           </div>
           <div className="flex min-h-11 items-center justify-between gap-3 rounded-lg border px-3 sm:justify-start sm:border-0 sm:px-0">
             <Label htmlFor="include-archived" className="text-sm">
@@ -387,7 +424,7 @@ export default function SearchView() {
         <EmptyState
           icon={<Search className="size-10" aria-hidden />}
           title="چه چیزی را جست‌وجو کنیم؟"
-          hint="نام پروژه، شماره باکس، مسیر، تاریخ، مسئول، نوع عملیات یا شناسه کابل را جست‌وجو کنید"
+          hint="نام پروژه، شماره باکس، مسیر، تاریخ، مسئول، نوع عملیات، شناسه کابل یا عنوان عکس را جست‌وجو کنید"
         />
       ) : total === 0 ? (
         <EmptyState
@@ -403,186 +440,242 @@ export default function SearchView() {
 
           {groups.projects.length > 0 && (
             <GroupSection title="پروژه‌ها" icon={<FolderKanban className="size-4" />} count={groups.projects.length}>
-              {groups.projects.map((p) => (
-                <ItemCard
-                  key={p.id}
-                  title={p.name}
-                  subtitle={[p.client, p.area].filter(Boolean).join(' — ') || undefined}
-                  meta={
-                    <>
-                      <span>کد: {p.code || '—'}</span>
-                      <span>{formatJalali(p.startDate || p.createdAt)}</span>
-                    </>
-                  }
-                  badges={<StatusBadge label={projectStatusLabels[p.status]} variant={projectStatusVariants[p.status]} />}
-                  onClick={() => navigate('project', { projectId: p.id })}
-                  trailing={NavigateIcon}
-                />
-              ))}
+              <GroupResults
+                items={groups.projects}
+                renderItem={(p) => (
+                  <ItemCard
+                    key={p.id}
+                    title={p.name}
+                    subtitle={[p.client, p.area].filter(Boolean).join(' — ') || undefined}
+                    meta={
+                      <>
+                        <span>کد: {p.code || '—'}</span>
+                        <span>{formatJalali(p.startDate || p.createdAt)}</span>
+                      </>
+                    }
+                    badges={<StatusBadge label={projectStatusLabels[p.status] ?? 'نامشخص'} variant={projectStatusVariants[p.status]} />}
+                    onClick={() => navigate('project', { projectId: p.id })}
+                    trailing={NavigateIcon}
+                  />
+                )}
+              />
             </GroupSection>
           )}
 
           {groups.routes.length > 0 && (
             <GroupSection title="مسیرها" icon={<RouteIcon className="size-4" />} count={groups.routes.length}>
-              {groups.routes.map((r) => (
-                <ItemCard
-                  key={r.id}
-                  title={r.name}
-                  subtitle={r.description || undefined}
-                  meta={
-                    <>
-                      <span>کد: {r.code || '—'}</span>
-                      <span>{formatJalali(r.createdAt)}</span>
-                    </>
-                  }
-                  onClick={() => navigate('route', { projectId: r.projectId, routeId: r.id })}
-                  trailing={NavigateIcon}
-                />
-              ))}
+              <GroupResults
+                items={groups.routes}
+                renderItem={(r) => (
+                  <ItemCard
+                    key={r.id}
+                    title={r.name}
+                    subtitle={r.description || undefined}
+                    meta={
+                      <>
+                        <span>کد: {r.code || '—'}</span>
+                        <span>{formatJalali(r.createdAt)}</span>
+                      </>
+                    }
+                    onClick={() => navigate('route', { projectId: r.projectId, routeId: r.id })}
+                    trailing={NavigateIcon}
+                  />
+                )}
+              />
             </GroupSection>
           )}
 
           {groups.boxes.length > 0 && (
             <GroupSection title="باکس‌ها" icon={<BoxIcon className="size-4" />} count={groups.boxes.length}>
-              {groups.boxes.map((b) => (
-                <ItemCard
-                  key={b.id}
-                  title={`باکس ${b.number}`}
-                  subtitle={[b.location, b.cableSpec].filter(Boolean).join(' — ') || undefined}
-                  meta={
-                    <>
-                      {b.capacity && <span>ظرفیت: {b.capacity}</span>}
-                      <span>{formatJalali(b.createdAt)}</span>
-                    </>
-                  }
-                  badges={<StatusBadge label={boxStatusLabels[b.status]} variant={boxStatusVariants[b.status]} />}
-                  onClick={() => navigate('box', { projectId: b.projectId, routeId: b.routeId, boxId: b.id })}
-                  trailing={NavigateIcon}
-                />
-              ))}
+              <GroupResults
+                items={groups.boxes}
+                renderItem={(b) => (
+                  <ItemCard
+                    key={b.id}
+                    title={`باکس ${b.number}`}
+                    subtitle={[b.location, b.cableSpec].filter(Boolean).join(' — ') || undefined}
+                    meta={
+                      <>
+                        {b.capacity && <span>ظرفیت: {b.capacity}</span>}
+                        <span>{formatJalali(b.createdAt)}</span>
+                      </>
+                    }
+                    badges={<StatusBadge label={boxStatusLabels[b.status] ?? 'نامشخص'} variant={boxStatusVariants[b.status]} />}
+                    onClick={() => navigate('box', { projectId: b.projectId, routeId: b.routeId, boxId: b.id })}
+                    trailing={NavigateIcon}
+                  />
+                )}
+              />
             </GroupSection>
           )}
 
           {groups.operations.length > 0 && (
             <GroupSection title="عملیات" icon={<ClipboardList className="size-4" />} count={groups.operations.length}>
-              {groups.operations.map((o) => (
-                <ItemCard
-                  key={o.id}
-                  title={o.title}
-                  subtitle={
-                    [
-                      o.type === 'custom' && o.customTypeLabel ? o.customTypeLabel : operationTypeLabels[o.type],
-                      o.assigneeName ? `مسئول: ${o.assigneeName}` : '',
-                    ]
-                      .filter(Boolean)
-                      .join(' — ') || undefined
-                  }
-                  meta={
-                    <>
-                      <span>{formatJalali(o.date)}</span>
-                      {o.techSpecs && <span>مشخصات: {o.techSpecs}</span>}
-                    </>
-                  }
-                  badges={<StatusBadge label={operationStatusLabels[o.status]} variant={operationStatusVariants[o.status]} />}
-                  onClick={() => navigate('operations', { projectId: o.projectId, operationId: o.id })}
-                  trailing={NavigateIcon}
-                />
-              ))}
+              <GroupResults
+                items={groups.operations}
+                renderItem={(o) => (
+                  <ItemCard
+                    key={o.id}
+                    title={o.title}
+                    subtitle={
+                      [
+                        o.type === 'custom' && o.customTypeLabel ? o.customTypeLabel : operationTypeLabels[o.type] ?? 'نامشخص',
+                        o.assigneeName ? `مسئول: ${o.assigneeName}` : '',
+                      ]
+                        .filter(Boolean)
+                        .join(' — ') || undefined
+                    }
+                    meta={
+                      <>
+                        <span>{formatJalali(o.date)}</span>
+                        {o.techSpecs && <span>مشخصات: {o.techSpecs}</span>}
+                      </>
+                    }
+                    badges={<StatusBadge label={operationStatusLabels[o.status] ?? 'نامشخص'} variant={operationStatusVariants[o.status]} />}
+                    onClick={() => navigate('operations', { projectId: o.projectId, operationId: o.id })}
+                    trailing={NavigateIcon}
+                  />
+                )}
+              />
             </GroupSection>
           )}
 
           {groups.fusions.length > 0 && (
             <GroupSection title="فیوژن" icon={<Zap className="size-4" />} count={groups.fusions.length}>
-              {groups.fusions.map((f) => (
-                <ItemCard
-                  key={f.id}
-                  title={f.connectionId ? `فیوژن (${f.connectionId})` : `فیوژن تارهای ${f.fiberNumbers || '—'}`}
-                  subtitle={f.result || f.description || undefined}
-                  meta={
-                    <>
-                      {f.tubeNumber && <span dir="auto">تیوب: {f.tubeNumber}</span>}
-                      {f.cableSpec && <span>{f.cableSpec}</span>}
-                      <span>{formatJalali(f.fusionDate)}</span>
-                    </>
-                  }
-                  onClick={() => navigate('fusion', { projectId: f.projectId, boxId: f.boxId, fusionId: f.id })}
-                  trailing={NavigateIcon}
-                />
-              ))}
+              <GroupResults
+                items={groups.fusions}
+                renderItem={(f) => (
+                  <ItemCard
+                    key={f.id}
+                    title={f.connectionId ? `فیوژن (${f.connectionId})` : `فیوژن تارهای ${f.fiberNumbers || '—'}`}
+                    subtitle={f.result || f.description || undefined}
+                    meta={
+                      <>
+                        {f.tubeNumber && <span dir="auto">تیوب: {f.tubeNumber}</span>}
+                        {f.cableSpec && <span>{f.cableSpec}</span>}
+                        <span>{formatJalali(f.fusionDate)}</span>
+                      </>
+                    }
+                    onClick={() => navigate('fusion', { projectId: f.projectId, boxId: f.boxId, fusionId: f.id })}
+                    trailing={NavigateIcon}
+                  />
+                )}
+              />
             </GroupSection>
           )}
 
           {groups.powerTests.length > 0 && (
             <GroupSection title="تست توان" icon={<Gauge className="size-4" />} count={groups.powerTests.length}>
-              {groups.powerTests.map((t) => (
-                <ItemCard
-                  key={t.id}
-                  title={t.location || 'تست توان'}
-                  subtitle={t.deviceModel ? `دستگاه: ${t.deviceModel}` : undefined}
-                  meta={
-                    <>
-                      <span dir="ltr" className="font-medium">
-                        {formatNum(t.value, 2)} {t.unit}
-                      </span>
-                      <span>{formatJalali(t.date)}</span>
-                      {t.assigneeName && <span>مسئول: {t.assigneeName}</span>}
-                    </>
-                  }
-                  onClick={() => navigate('power-tests', { projectId: t.projectId, powerTestId: t.id })}
-                  trailing={NavigateIcon}
-                />
-              ))}
+              <GroupResults
+                items={groups.powerTests}
+                renderItem={(t) => (
+                  <ItemCard
+                    key={t.id}
+                    title={t.location || 'تست توان'}
+                    subtitle={t.deviceModel ? `دستگاه: ${t.deviceModel}` : undefined}
+                    meta={
+                      <>
+                        <span dir="ltr" className="font-medium">
+                          {formatNum(t.value, 2)} {t.unit}
+                        </span>
+                        <span>{formatJalali(t.date)}</span>
+                        {t.assigneeName && <span>مسئول: {t.assigneeName}</span>}
+                      </>
+                    }
+                    onClick={() => navigate('power-tests', { projectId: t.projectId, powerTestId: t.id })}
+                    trailing={NavigateIcon}
+                  />
+                )}
+              />
             </GroupSection>
           )}
 
           {groups.dropCables.length > 0 && (
             <GroupSection title="دراپ‌کابل" icon={<Cable className="size-4" />} count={groups.dropCables.length}>
-              {groups.dropCables.map((c) => (
-                <ItemCard
-                  key={c.id}
-                  title={c.destination || 'دراپ‌کابل'}
-                  subtitle={[c.address, c.serviceId ? `شناسه سرویس: ${c.serviceId}` : ''].filter(Boolean).join(' — ') || undefined}
-                  meta={
-                    <>
-                      {c.cableType && <span>کابل: {c.cableType}</span>}
-                      {c.executorName && <span>مجری: {c.executorName}</span>}
-                      <span>{formatJalali(c.date)}</span>
-                    </>
-                  }
-                  badges={
-                    <>
-                      <StatusBadge label={installStatusLabels[c.installStatus]} variant={installStatusVariants[c.installStatus]} />
-                      <StatusBadge label={deliveryStatusLabels[c.deliveryStatus]} variant={deliveryStatusVariants[c.deliveryStatus]} />
-                    </>
-                  }
-                  onClick={() => navigate('drop-cables', { projectId: c.projectId, dropCableId: c.id })}
-                  trailing={NavigateIcon}
-                />
-              ))}
+              <GroupResults
+                items={groups.dropCables}
+                renderItem={(c) => (
+                  <ItemCard
+                    key={c.id}
+                    title={c.destination || 'دراپ‌کابل'}
+                    subtitle={[c.address, c.serviceId ? `شناسه سرویس: ${c.serviceId}` : ''].filter(Boolean).join(' — ') || undefined}
+                    meta={
+                      <>
+                        {c.cableType && <span>کابل: {c.cableType}</span>}
+                        {c.executorName && <span>مجری: {c.executorName}</span>}
+                        <span>{formatJalali(c.date)}</span>
+                      </>
+                    }
+                    badges={
+                      <>
+                        <StatusBadge label={installStatusLabels[c.installStatus] ?? 'نامشخص'} variant={installStatusVariants[c.installStatus]} />
+                        <StatusBadge label={deliveryStatusLabels[c.deliveryStatus] ?? 'نامشخص'} variant={deliveryStatusVariants[c.deliveryStatus]} />
+                      </>
+                    }
+                    onClick={() => navigate('drop-cables', { projectId: c.projectId, dropCableId: c.id })}
+                    trailing={NavigateIcon}
+                  />
+                )}
+              />
             </GroupSection>
           )}
 
           {groups.profiles.length > 0 && (
             <GroupSection title="پروفایل‌ها" icon={<UserRound className="size-4" />} count={groups.profiles.length}>
-              {groups.profiles.map((p) => (
-                <ItemCard
-                  key={p.id}
-                  title={`${p.firstName} ${p.lastName}`.trim() || 'پروفایل'}
-                  subtitle={[p.company, p.city].filter(Boolean).join(' — ') || undefined}
-                  meta={
-                    <>
-                      <span>
-                        {p.roles
-                          .map((r) => (r === 'custom' && p.customRoleLabel ? p.customRoleLabel : profileRoleLabels[r]))
-                          .filter(Boolean)
-                          .join('، ') || '—'}
-                      </span>
-                    </>
-                  }
-                  onClick={() => navigate('profiles')}
-                  trailing={NavigateIcon}
-                />
-              ))}
+              <GroupResults
+                items={groups.profiles}
+                renderItem={(p) => (
+                  <ItemCard
+                    key={p.id}
+                    title={`${p.firstName} ${p.lastName}`.trim() || 'پروفایل'}
+                    subtitle={[p.company, p.city].filter(Boolean).join(' — ') || undefined}
+                    meta={
+                      <>
+                        <span>
+                          {p.roles
+                            .map((r) => (r === 'custom' && p.customRoleLabel ? p.customRoleLabel : profileRoleLabels[r] ?? 'نامشخص'))
+                            .filter(Boolean)
+                            .join('، ') || '—'}
+                        </span>
+                      </>
+                    }
+                    onClick={() => navigate('profiles')}
+                    trailing={NavigateIcon}
+                  />
+                )}
+              />
+            </GroupSection>
+          )}
+
+          {groups.photos.length > 0 && (
+            <GroupSection title="عکس‌ها" icon={<ImageIcon className="size-4" />} count={groups.photos.length}>
+              <GroupResults
+                items={groups.photos}
+                renderItem={(p) => (
+                  <ItemCard
+                    key={p.id}
+                    title={p.title || 'عکس'}
+                    subtitle={[photoCategoryLabels[p.category] ?? 'نامشخص', p.description].filter(Boolean).join(' — ') || undefined}
+                    thumb={
+                      p.thumb ? (
+                        <img src={p.thumb} alt={p.title || 'عکس ثبت‌شده'} className="size-12 shrink-0 rounded-md border object-cover" loading="lazy" />
+                      ) : (
+                        <span className="flex size-12 shrink-0 items-center justify-center rounded-md border bg-muted text-muted-foreground" aria-hidden>
+                          <ImageIcon className="size-5" />
+                        </span>
+                      )
+                    }
+                    meta={
+                      <>
+                        <span>{formatJalali(p.createdAt)}</span>
+                        {p.size > 0 && <span>{formatBytes(p.size)}</span>}
+                      </>
+                    }
+                    onClick={() => navigate('photos', { projectId: p.projectId, photoId: p.id })}
+                    trailing={NavigateIcon}
+                  />
+                )}
+              />
             </GroupSection>
           )}
         </div>

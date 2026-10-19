@@ -87,6 +87,7 @@ import {
 } from './primitives'
 import { PhotoPickerButton } from './photo-picker'
 import { PhotoGallery } from './photo-gallery'
+import { CsvExportButton } from './csv-export-button'
 
 const ALL = 'all'
 const NONE = '__none__'
@@ -109,9 +110,10 @@ type FormErrors = Partial<
 // ================= کمکی‌های نمایش =================
 
 function methodLabel(c: DropCable): string {
+  // خوانش دفاعی — رکورد بازگردی‌شده با مقدار نامعتبر، لیبل «—» می‌گیرد
   return c.installMethod === 'custom'
     ? c.customMethodLabel || installMethodLabels.custom
-    : installMethodLabels[c.installMethod]
+    : installMethodLabels[c.installMethod] ?? '—'
 }
 
 /** متراژ مصرفی با برچسب منبع — فقط مقادیر معتبر نمایش داده می‌شوند */
@@ -273,6 +275,21 @@ export default function DropCablesView() {
     }
   }
 
+  // ---------- لینک عمیق: باز شدن خودکار ویرایش برای dropCableId (فقط یک بار در هر نشانی) ----------
+  const deepLinkConsumedRef = React.useRef(false)
+  React.useEffect(() => {
+    deepLinkConsumedRef.current = false
+  }, [params.dropCableId])
+  React.useEffect(() => {
+    if (deepLinkConsumedRef.current) return
+    const id = params.dropCableId
+    if (!id || !cables) return
+    deepLinkConsumedRef.current = true
+    const rec = cables.find((x) => x.id === id)
+    if (rec) openEdit(rec)
+     
+  }, [cables, params.dropCableId])
+
   // ---------- چیپ‌های فیلتر فعال ----------
   const chips: Array<{ key: string; label: string; onRemove: () => void }> = []
   if (filterProject !== ALL)
@@ -298,13 +315,13 @@ export default function DropCablesView() {
   if (filterInstall !== ALL)
     chips.push({
       key: 'install',
-      label: `وضعیت نصب: ${installStatusLabels[filterInstall as InstallStatus]}`,
+      label: `وضعیت نصب: ${installStatusLabels[filterInstall as InstallStatus] ?? '—'}`,
       onRemove: () => setFilterInstall(ALL),
     })
   if (filterDelivery !== ALL)
     chips.push({
       key: 'delivery',
-      label: `وضعیت تحویل: ${deliveryStatusLabels[filterDelivery as DeliveryStatus]}`,
+      label: `وضعیت تحویل: ${deliveryStatusLabels[filterDelivery as DeliveryStatus] ?? '—'}`,
       onRemove: () => setFilterDelivery(ALL),
     })
   if (filterDateFrom) chips.push({ key: 'from', label: `از ${formatJalali(filterDateFrom)}`, onRemove: () => setFilterDateFrom(undefined) })
@@ -337,10 +354,13 @@ export default function DropCablesView() {
         subtitle={headerSubtitle}
         onBack={back}
         actions={
-          <Button onClick={openCreate} className="min-h-11">
-            <Plus className="size-4" />
-            ثبت دراپ‌کابل
-          </Button>
+          <div className="flex items-center gap-2">
+            <CsvExportButton kind="drop-cables" projectId={filterProject !== ALL ? filterProject : undefined} className="min-h-11" />
+            <Button onClick={openCreate} className="min-h-11">
+              <Plus className="size-4" />
+              ثبت دراپ‌کابل
+            </Button>
+          </div>
         }
       />
 
@@ -529,11 +549,11 @@ export default function DropCablesView() {
                 badges={
                   <>
                     <StatusBadge
-                      label={installStatusLabels[c.installStatus]}
+                      label={installStatusLabels[c.installStatus] ?? '—'}
                       variant={installStatusVariants[c.installStatus]}
                     />
                     <StatusBadge
-                      label={deliveryStatusLabels[c.deliveryStatus]}
+                      label={deliveryStatusLabels[c.deliveryStatus] ?? '—'}
                       variant={deliveryStatusVariants[c.deliveryStatus]}
                     />
                   </>
@@ -692,6 +712,8 @@ function DropCableFormDialog({
   const [values, setValues] = React.useState<DropCableFormValues>(() => defaultFormValues(prefill))
   const [errors, setErrors] = React.useState<FormErrors>({})
   const [saving, setSaving] = React.useState(false)
+  // بنر موفقیت در حالت ایجاد (دیالوگ باز می‌ماند تا عکس با شناسه واقعی ثبت شود)
+  const [justCreated, setJustCreated] = React.useState(false)
 
   // prefill فقط در زمان بازشدن خوانده می‌شود (ref تا وابستگی اضافه نسازد)
   const prefillRef = React.useRef(prefill)
@@ -702,6 +724,12 @@ function DropCableFormDialog({
     setErrors({})
     setValues(editing ? formValuesFromRecord(editing) : defaultFormValues(prefillRef.current))
   }, [open, editing])
+
+  // بنر فقط در نشانیِ بازشدنِ جدید ریست می‌شود؛ بعد از ثبت در همان نشانی باید بماند
+  React.useEffect(() => {
+    if (!open) return
+    setJustCreated(false)
+  }, [open])
 
   const setField = <K extends keyof DropCableFormValues>(key: K, v: DropCableFormValues[K]) => {
     setValues((f) => ({ ...f, [key]: v }))
@@ -761,10 +789,14 @@ function DropCableFormDialog({
       const snap = profileSnapshot(selectedProfile)
       executorProfileId = snap.profileId
       executorName = snap.name
+    } else if (values.executorProfileId && values.executorProfileId !== NONE) {
+      // پروفایل انتخاب‌شده دیگر موجود نیست — اسنپ‌شات تاریخی حفظ می‌شود
+      executorProfileId = values.executorProfileId
+      executorName = editing?.executorName ?? ''
     } else {
+      // «بدون مجری» — اسنپ‌شات قبلی هم باید پاک شود
       executorProfileId = undefined
-      // حفظ نام تاریخی اگر پروفایل قبلی حذف شده باشد
-      executorName = editing ? editing.executorName : ''
+      executorName = ''
     }
 
     // قاعده سلامت داده:
@@ -807,6 +839,7 @@ function DropCableFormDialog({
       } else {
         const rec = await createDropCable(payload)
         onCreated(rec)
+        setJustCreated(true)
       }
     } catch {
       toast.error(messages.error)
@@ -830,7 +863,22 @@ function DropCableFormDialog({
           </DialogDescription>
         </DialogHeader>
 
-        <div className="flex flex-col gap-3 overflow-y-auto p-4">
+        <form
+          id="drop-cable-form"
+          onSubmit={(e) => {
+            e.preventDefault()
+            handleSave()
+          }}
+          className="flex flex-col gap-3 overflow-y-auto p-4"
+        >
+          {justCreated && (
+            <div
+              role="status"
+              className="rounded-lg border border-primary/30 bg-primary/10 px-3 py-2.5 text-sm font-medium text-primary"
+            >
+              ذخیره شد ✓ — اکنون می‌توانید برای این مورد عکس ثبت کنید یا مشخصات را تکمیل کنید
+            </div>
+          )}
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <Field label="پروژه" required error={errors.projectId}>
               <Select
@@ -923,7 +971,7 @@ function DropCableFormDialog({
             <Field label="مجری" hint="نام و نقش در زمان ثبت ذخیره می‌شود">
               <Select
                 value={values.executorProfileId || undefined}
-                onValueChange={(v) => setField('executorProfileId', v)}
+                onValueChange={(v) => setField('executorProfileId', v === NONE ? '' : v)}
               >
                 <SelectTrigger className="min-h-11 w-full" aria-label="انتخاب مجری">
                   <SelectValue placeholder="بدون مجری" />
@@ -981,6 +1029,7 @@ function DropCableFormDialog({
                 onChange={(v) => setField('coreCount', v)}
                 unit="کور"
                 placeholder="اختیاری"
+                allowNegative={false}
               />
             </Field>
 
@@ -990,6 +1039,7 @@ function DropCableFormDialog({
                 onChange={(v) => setField('initialMeters', v)}
                 unit="متر"
                 placeholder="اختیاری"
+                allowNegative={false}
               />
             </Field>
 
@@ -999,6 +1049,7 @@ function DropCableFormDialog({
                 onChange={(v) => setField('returnedMeters', v)}
                 unit="متر"
                 placeholder="اختیاری"
+                allowNegative={false}
               />
             </Field>
 
@@ -1013,6 +1064,7 @@ function DropCableFormDialog({
                 onChange={(v) => setField('consumedUser', v)}
                 unit="متر"
                 placeholder="اختیاری"
+                allowNegative={false}
               />
             </Field>
 
@@ -1029,7 +1081,14 @@ function DropCableFormDialog({
                     />
                   </>
                 ) : (
-                  <span className="text-xs text-muted-foreground">{preview.message ?? '—'}</span>
+                  <span
+                    className={cn(
+                      'text-xs',
+                      preview.message ? 'font-medium text-amber-600 dark:text-amber-400' : 'text-muted-foreground'
+                    )}
+                  >
+                    {preview.message ?? '—'}
+                  </span>
                 )}
               </div>
             </div>
@@ -1109,13 +1168,13 @@ function DropCableFormDialog({
                   <h3 className="text-sm font-semibold">عکس‌های دراپ‌کابل</h3>
                   <PhotoPickerButton
                     link={{
-                      projectId: editing.projectId,
-                      routeId: editing.routeId,
-                      boxId: editing.sourceBoxId,
+                      projectId: values.projectId || editing.projectId,
+                      routeId: values.routeId || undefined,
+                      boxId: values.sourceBoxId || undefined,
                       dropCableId: editing.id,
                     }}
                     category="drop_cable"
-                    baseTitle={`دراپ‌کابل ${editing.destination}`}
+                    baseTitle={`دراپ‌کابل ${values.destination.trim() || editing.destination}`}
                     label="افزودن عکس دراپ‌کابل"
                     size="sm"
                   />
@@ -1124,13 +1183,13 @@ function DropCableFormDialog({
               </section>
             )}
           </div>
-        </div>
+        </form>
 
         <DialogFooter className="flex-row justify-start gap-2 border-t p-4">
-          <Button onClick={handleSave} disabled={saving} className="min-h-11 flex-1">
+          <Button type="submit" form="drop-cable-form" disabled={saving} className="min-h-11 flex-1">
             {saving ? 'در حال ذخیره…' : 'ذخیره'}
           </Button>
-          <Button variant="outline" onClick={onClose} disabled={saving} className="min-h-11 flex-1">
+          <Button variant="outline" type="button" onClick={onClose} disabled={saving} className="min-h-11 flex-1">
             انصراف
           </Button>
         </DialogFooter>

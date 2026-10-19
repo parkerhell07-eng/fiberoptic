@@ -92,36 +92,37 @@ function BoxFormDialog({
   onOpenChange: (open: boolean) => void
   projectId: string
   routes: Route[]
-  editing: Box
+  /** اسنپ‌شات باکس در زمان بازشدن — هرگز آبجکت زنده liveQuery نیست */
+  editing: Box | null
 }) {
   const [form, setForm] = React.useState<BoxFormValues>({
-    number: editing.number,
-    location: editing.location,
-    cableSpec: editing.cableSpec,
-    capacity: editing.capacity,
-    status: editing.status,
-    routeId: editing.routeId,
-    description: editing.description,
+    number: '',
+    location: '',
+    cableSpec: '',
+    capacity: '',
+    status: 'not_installed',
+    routeId: '',
+    description: '',
   })
   const [errors, setErrors] = React.useState<{ number?: string; routeId?: string }>({})
   const [saving, setSaving] = React.useState(false)
 
   React.useEffect(() => {
-    if (open) {
-      setForm({
-        number: editing.number,
-        location: editing.location,
-        cableSpec: editing.cableSpec,
-        capacity: editing.capacity,
-        status: editing.status,
-        routeId: editing.routeId,
-        description: editing.description,
-      })
-      setErrors({})
-    }
+    if (!open || !editing) return
+    setForm({
+      number: editing.number,
+      location: editing.location,
+      cableSpec: editing.cableSpec,
+      capacity: editing.capacity,
+      status: editing.status,
+      routeId: editing.routeId,
+      description: editing.description,
+    })
+    setErrors({})
   }, [open, editing])
 
   async function handleSave() {
+    if (!editing) return
     const errs: { number?: string; routeId?: string } = {}
     if (!form.number.trim()) errs.number = 'شماره باکس الزامی است'
     if (!form.routeId) errs.routeId = 'انتخاب مسیر الزامی است'
@@ -152,6 +153,14 @@ function BoxFormDialog({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent dir="rtl" className="max-w-lg">
+        <form
+          id="box-edit-form"
+          onSubmit={(e) => {
+            e.preventDefault()
+            handleSave()
+          }}
+          className="flex flex-col gap-4"
+        >
         <DialogHeader>
           <DialogTitle>ویرایش باکس</DialogTitle>
           <DialogDescription>مشخصات باکس را ویرایش کنید؛ شماره باکس و مسیر الزامی هستند.</DialogDescription>
@@ -225,13 +234,14 @@ function BoxFormDialog({
           </Field>
         </div>
         <DialogFooter className="flex-row justify-start gap-2">
-          <Button onClick={handleSave} disabled={saving} className="min-h-11 flex-1">
+          <Button type="submit" form="box-edit-form" disabled={saving} className="min-h-11 flex-1">
             {saving ? 'در حال ذخیره…' : 'ذخیره'}
           </Button>
-          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={saving} className="min-h-11 flex-1">
+          <Button variant="outline" type="button" onClick={() => onOpenChange(false)} disabled={saving} className="min-h-11 flex-1">
             انصراف
           </Button>
         </DialogFooter>
+        </form>
       </DialogContent>
     </Dialog>
   )
@@ -253,6 +263,7 @@ type BoxTab = 'fusions' | 'power' | 'operations' | 'drops' | 'photos'
 export default function BoxDetailView() {
   const params = useAppStore((s) => s.params)
   const navigate = useAppStore((s) => s.navigate)
+  const replace = useAppStore((s) => s.replace)
   const back = useAppStore((s) => s.back)
   const boxId = params.boxId
 
@@ -296,6 +307,8 @@ export default function BoxDetailView() {
   // وضعیت‌های محلی
   const [tab, setTab] = React.useState<BoxTab>('fusions')
   const [editOpen, setEditOpen] = React.useState(false)
+  // اسنپ‌شات باکس در زمان بازشدن فرم ویرایش (رکورد زنده liveQuery به فرم داده نمی‌شود)
+  const [editingBox, setEditingBox] = React.useState<Box | null>(null)
   const [deleteOpen, setDeleteOpen] = React.useState(false)
   const [deleting, setDeleting] = React.useState(false)
 
@@ -331,7 +344,8 @@ export default function BoxDetailView() {
       await deleteBoxCascade(box.id)
       toast.success(messages.deleted)
       setDeleteOpen(false)
-      navigate('project', { projectId: pid })
+      // replace: Back نباید به باکس حذف‌شده برگردد
+      replace('route', { routeId: rid, projectId: pid })
     } catch {
       toast.error(messages.error)
     } finally {
@@ -347,7 +361,10 @@ export default function BoxDetailView() {
         onBack={back}
         actions={
           <>
-            <Button variant="outline" size="icon" className="size-11" aria-label="ویرایش باکس" onClick={() => setEditOpen(true)}>
+            <Button variant="outline" size="icon" className="size-11" aria-label="ویرایش باکس" onClick={() => {
+              setEditingBox(box)
+              setEditOpen(true)
+            }}>
               <Pencil className="size-4" />
             </Button>
             <Button
@@ -601,7 +618,7 @@ export default function BoxDetailView() {
       )}
 
       {/* ---------- دیالوگ‌ها ---------- */}
-      <BoxFormDialog open={editOpen} onOpenChange={setEditOpen} projectId={pid} routes={projectRoutes ?? []} editing={box} />
+      <BoxFormDialog open={editOpen} onOpenChange={setEditOpen} projectId={pid} routes={projectRoutes ?? []} editing={editingBox} />
 
       <ConfirmDialog
         open={deleteOpen}

@@ -1,24 +1,37 @@
 'use client'
 
-// فایبرکار — داشبورد (آمار واقعی از IndexedDB + میان‌برها + آخرین رکوردها)
+// فایبرکار — داشبورد پیشرفته (آمار زنده، روند عملیات ۶ ماه، توزیع وضعیت، یادآور پشتیبان، سنجاق)
+// همه داده‌ها واقعی و از IndexedDB — هیچ داده ساختگی وجود ندارد.
 import * as React from 'react'
 import { useLiveQuery } from 'dexie-react-hooks'
 import {
+  Activity,
   Boxes,
   Cable,
   ClipboardList,
   DatabaseBackup,
+  Download,
   FileDown,
   FolderKanban,
   FolderPlus,
   Gauge,
   Images,
+  Info,
   Map as MapIcon,
+  Pin,
   Ruler,
   Sparkles,
   Users,
   Waypoints,
 } from 'lucide-react'
+import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
 import { Skeleton } from '@/components/ui/skeleton'
 import {
   EmptyState,
@@ -26,9 +39,11 @@ import {
   StatCard,
   StatusBadge,
 } from '@/components/fiberkar/primitives'
+import { buildAndSaveCsv, type CsvKind } from '@/components/fiberkar/csv-export-button'
 import { useAppStore } from '@/store/app-store'
-import { db, getDashboardStats } from '@/lib/localdb'
+import { db, getDashboardStats, getLastBackupInfo } from '@/lib/localdb'
 import { formatJalali, formatMeters, toFa } from '@/lib/persian'
+import { cn } from '@/lib/utils'
 import {
   operationStatusLabels,
   operationStatusVariants,
@@ -36,7 +51,7 @@ import {
   projectStatusLabels,
   projectStatusVariants,
 } from '@/lib/labels'
-import type { Operation, Project } from '@/lib/types'
+import type { Operation, Project, ProjectStatus } from '@/lib/types'
 
 const SHORTCUTS = [
   { label: 'پروژه جدید', icon: FolderPlus, view: 'projects' },
@@ -47,15 +62,86 @@ const SHORTCUTS = [
   { label: 'پشتیبان‌گیری', icon: DatabaseBackup, view: 'backup' },
 ] as const
 
+const DAY_MS = 24 * 60 * 60 * 1000
+
+/** نمودار میله‌ای روند عملیات (div خالص — بدون وابستگی جدید) */
+function TrendChart({ data }: { data: Array<{ label: string; count: number }> }) {
+  const max = Math.max(1, ...data.map((d) => d.count))
+  const ariaLabel = `نمودار میله‌ای روند عملیات در ۶ ماه اخیر — ${data
+    .map((d) => `${d.label}: ${toFa(d.count)} عملیات`)
+    .join('، ')}`
+  return (
+    <div role="img" aria-label={ariaLabel} className="rounded-xl border bg-card p-4">
+      <div className="flex items-end justify-between gap-2 sm:gap-4">
+        {data.map((d) => {
+          const pct = Math.round((d.count / max) * 100)
+          return (
+            <div key={d.label} className="flex min-w-0 flex-1 flex-col items-center gap-1.5">
+              <span className="text-xs font-bold tabular-nums">{toFa(d.count)}</span>
+              <div className="flex h-24 w-full items-end sm:h-28" aria-hidden>
+                <div
+                  className={cn('w-full rounded-t-md bg-primary transition-all', d.count === 0 && 'opacity-25')}
+                  style={{ height: `${d.count === 0 ? 2 : Math.max(6, pct)}%`, minHeight: '2px' }}
+                />
+              </div>
+              <span className="max-w-full truncate text-[10px] text-muted-foreground sm:text-xs">{d.label}</span>
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
+/** توزیع وضعیت پروژه‌ها — نوار افقی رنگی مطابق واریانت بج‌ها */
+function StatusDistribution({ data }: { data: Array<{ status: ProjectStatus; count: number }> }) {
+  const max = Math.max(1, ...data.map((d) => d.count))
+  const barClass: Record<'default' | 'secondary' | 'destructive' | 'outline', string> = {
+    default: 'bg-primary',
+    secondary: 'bg-secondary',
+    destructive: 'bg-destructive',
+    outline: 'bg-muted-foreground/40',
+  }
+  if (data.length === 0) {
+    return (
+      <p className="rounded-xl border border-dashed p-4 text-center text-sm text-muted-foreground">
+        پروژه‌ای ثبت نشده است
+      </p>
+    )
+  }
+  return (
+    <div className="space-y-3 rounded-xl border bg-card p-4" role="img" aria-label="توزیع وضعیت پروژه‌ها">
+      {data.map(({ status, count }) => (
+        <div key={status} className="flex items-center gap-2 sm:gap-3">
+          <Badge variant={projectStatusVariants[status]} className="w-28 shrink-0 justify-center text-[11px] sm:w-32">
+            {projectStatusLabels[status] ?? 'نامشخص'}
+          </Badge>
+          <div className="h-3 min-w-0 flex-1 overflow-hidden rounded-full bg-muted" aria-hidden>
+            <div
+              className={cn('h-full rounded-full', barClass[projectStatusVariants[status]])}
+              style={{ width: `${Math.max(3, Math.round((count / max) * 100))}%` }}
+            />
+          </div>
+          <span className="w-8 shrink-0 text-end text-sm font-bold tabular-nums">{toFa(count)}</span>
+        </div>
+      ))}
+    </div>
+  )
+}
+
 export default function DashboardView() {
   const navigate = useAppStore((s) => s.navigate)
 
   // آمار کلی — داده واقعی، بدون داده ساختگی
   const stats = useLiveQuery(() => getDashboardStats(), [])
 
+  // اطلاعات آخرین پشتیبان (جدا از آمار) — برای یادآور پشتیبان‌گیری
+  const lastBackup = useLiveQuery(() => getLastBackupInfo(), [])
+
   const recentProjects = useLiveQuery(async () => {
     const ps = await db.projects.filter((p) => !p.archived).toArray()
-    return ps.sort((a, b) => b.createdAt - a.createdAt).slice(0, 5)
+    // سنجاق‌شده‌ها اول، سپس جدیدترین
+    return ps.sort((a, b) => (b.pinned ?? 0) - (a.pinned ?? 0) || b.createdAt - a.createdAt).slice(0, 5)
   }, [])
 
   const recentOperations = useLiveQuery(async () => {
@@ -63,7 +149,28 @@ export default function DashboardView() {
     return ops
   }, [])
 
-  const hasNoData = stats !== undefined && stats.projectsTotal === 0
+  // تشخیص خالی‌بودن «واقعی» — شامل آرشیو؛ کاربر فقط‌آرشیوی هم نباید خالی می‌دید
+  const hasNoData = stats !== undefined && stats.projectsTotalAll === 0
+
+  // ---------- یادآور پشتیبان‌گیری ----------
+  const backupReminder = React.useMemo(() => {
+    if (lastBackup === undefined) return null // هنوز در حال بارگذاری
+    if (lastBackup === null) return { kind: 'never' as const, days: 0 }
+    const days = Math.floor((Date.now() - lastBackup.time) / DAY_MS)
+    return days >= 7 ? { kind: 'stale' as const, days } : null
+  }, [lastBackup])
+
+  // ---------- خروجی CSV (همه داده‌ها) ----------
+  const [exportingKind, setExportingKind] = React.useState<CsvKind | null>(null)
+  async function handleExportCsv(kind: CsvKind) {
+    if (exportingKind) return
+    setExportingKind(kind)
+    try {
+      await buildAndSaveCsv(kind)
+    } finally {
+      setExportingKind(null)
+    }
+  }
 
   return (
     <div className="space-y-6">
@@ -72,6 +179,27 @@ export default function DashboardView() {
         <h1 className="text-xl font-bold sm:text-2xl">داشبورد</h1>
         <p className="mt-0.5 text-sm text-muted-foreground">نمای کلی کارهای فیبر نوری شما — همه داده‌ها فقط روی همین دستگاه</p>
       </div>
+
+      {/* یادآور پشتیبان‌گیری */}
+      {backupReminder && (
+        <div
+          role="status"
+          className="flex flex-col gap-3 rounded-xl border border-amber-500/40 bg-amber-500/10 p-4 text-amber-900 dark:text-amber-200 sm:flex-row sm:items-center"
+        >
+          <span className="shrink-0 text-amber-600 dark:text-amber-300" aria-hidden>
+            <Info className="size-5" />
+          </span>
+          <p className="min-w-0 flex-1 text-sm font-medium">
+            {backupReminder.kind === 'never'
+              ? 'هنوز پشتیبان‌گیری نکرده‌اید — داده‌ها فقط روی این دستگاه است'
+              : `آخرین پشتیبان ${toFa(backupReminder.days)} روز پیش بوده است؛ یک پشتیبان تازه تهیه کنید`}
+          </p>
+          <Button size="sm" className="min-h-11 shrink-0 bg-amber-600 hover:bg-amber-700 sm:min-h-9" onClick={() => navigate('backup')}>
+            <DatabaseBackup className="size-4" aria-hidden />
+            پشتیبان‌گیری
+          </Button>
+        </div>
+      )}
 
       {/* میان‌برهای سریع */}
       <section aria-label="میان‌برهای سریع">
@@ -95,7 +223,33 @@ export default function DashboardView() {
 
       {/* آمار */}
       <section aria-label="آمار کلی">
-        <h2 className="mb-3 text-sm font-semibold text-muted-foreground">آمار کلی</h2>
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+          <h2 className="text-sm font-semibold text-muted-foreground">آمار کلی</h2>
+          {!hasNoData && (
+            <DropdownMenu dir="rtl">
+              <DropdownMenuTrigger asChild>
+                <Button variant="ghost" size="sm" className="min-h-9 gap-1.5 text-xs" disabled={!!exportingKind}>
+                  {exportingKind ? 'در حال ساخت…' : 'خروجی CSV'}
+                  <Download className="size-3.5" aria-hidden />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="start">
+                <DropdownMenuItem onClick={() => void handleExportCsv('operations')} disabled={!!exportingKind}>
+                  <ClipboardList className="size-4" aria-hidden />
+                  عملیات
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => void handleExportCsv('drop-cables')} disabled={!!exportingKind}>
+                  <Cable className="size-4" aria-hidden />
+                  دراپ‌کابل‌ها
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => void handleExportCsv('power-tests')} disabled={!!exportingKind}>
+                  <Gauge className="size-4" aria-hidden />
+                  تست‌های توان
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          )}
+        </div>
         {stats === undefined ? (
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
             {Array.from({ length: 8 }).map((_, i) => (
@@ -112,7 +266,8 @@ export default function DashboardView() {
           />
         ) : (
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-            <StatCard label="پروژه‌های فعال" value={toFa(stats.projectsActive)} icon={<FolderKanban className="size-4" />} onClick={() => navigate('projects')} tone="accent" />
+            <StatCard label="پروژه‌ها" value={toFa(stats.projectsTotal)} icon={<FolderKanban className="size-4" />} onClick={() => navigate('projects')} tone="accent" />
+            <StatCard label="در حال اجرا" value={toFa(stats.projectsActive)} icon={<Activity className="size-4" />} onClick={() => navigate('projects')} />
             <StatCard label="مسیرها" value={toFa(stats.routes)} icon={<Waypoints className="size-4" />} onClick={() => navigate('projects')} />
             <StatCard label="باکس‌ها" value={toFa(stats.boxes)} icon={<Boxes className="size-4" />} />
             <StatCard label="عملیات این ماه" value={toFa(stats.operationsThisMonth)} icon={<ClipboardList className="size-4" />} onClick={() => navigate('operations')} tone="accent" />
@@ -125,6 +280,30 @@ export default function DashboardView() {
           </div>
         )}
       </section>
+
+      {/* روند عملیات ۶ ماه اخیر */}
+      {!hasNoData && (
+        <section aria-label="روند عملیات ۶ ماه اخیر">
+          <h2 className="mb-3 text-sm font-semibold text-muted-foreground">روند عملیات (۶ ماه اخیر)</h2>
+          {stats === undefined ? (
+            <Skeleton className="h-44 rounded-xl" />
+          ) : (
+            <TrendChart data={stats.operationsByMonth} />
+          )}
+        </section>
+      )}
+
+      {/* توزیع وضعیت پروژه‌ها */}
+      {!hasNoData && (
+        <section aria-label="توزیع وضعیت پروژه‌ها">
+          <h2 className="mb-3 text-sm font-semibold text-muted-foreground">توزیع وضعیت پروژه‌ها</h2>
+          {stats === undefined ? (
+            <Skeleton className="h-28 rounded-xl" />
+          ) : (
+            <StatusDistribution data={stats.projectStatusCounts} />
+          )}
+        </section>
+      )}
 
       {/* آخرین پروژه‌ها */}
       {!hasNoData && (
@@ -153,7 +332,17 @@ export default function DashboardView() {
                 <ItemCard
                   key={p.id}
                   title={p.name}
-                  badges={<StatusBadge label={projectStatusLabels[p.status]} variant={projectStatusVariants[p.status]} />}
+                  badges={
+                    <>
+                      <StatusBadge label={projectStatusLabels[p.status] ?? 'نامشخص'} variant={projectStatusVariants[p.status]} />
+                      {p.pinned === 1 && (
+                        <span className="inline-flex shrink-0 items-center gap-1 rounded-md bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">
+                          <Pin className="size-3" aria-hidden />
+                          سنجاق‌شده
+                        </span>
+                      )}
+                    </>
+                  }
                   subtitle={[p.client, p.area].filter(Boolean).join(' • ')}
                   meta={
                     <>
@@ -196,7 +385,7 @@ export default function DashboardView() {
                 <ItemCard
                   key={op.id}
                   title={op.title || operationTypeLabels[op.type]}
-                  badges={<StatusBadge label={operationStatusLabels[op.status]} variant={operationStatusVariants[op.status]} />}
+                  badges={<StatusBadge label={operationStatusLabels[op.status] ?? 'نامشخص'} variant={operationStatusVariants[op.status]} />}
                   meta={
                     <>
                       <span>{op.customTypeLabel || operationTypeLabels[op.type]}</span>

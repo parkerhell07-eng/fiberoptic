@@ -124,7 +124,7 @@ export function StatCard({
 
 // ================= بج وضعیت =================
 export function StatusBadge({ label, variant }: { label: string; variant?: 'default' | 'secondary' | 'destructive' | 'outline' }) {
-  return <Badge variant={variant ?? 'secondary'} className="shrink-0">{label}</Badge>
+  return <Badge variant={variant ?? 'secondary'} className="shrink-0">{label || 'نامشخص'}</Badge>
 }
 
 // ================= دیالوگ تأیید =================
@@ -155,12 +155,26 @@ export function ConfirmDialog({
           {description && <DialogDescription>{description}</DialogDescription>}
         </DialogHeader>
         <DialogFooter className="flex-row justify-start gap-2">
-          <Button variant={destructive ? 'destructive' : 'default'} onClick={onConfirm} disabled={loading} className="min-h-11 flex-1">
-            {loading ? 'در حال انجام…' : confirmLabel}
-          </Button>
-          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={loading} className="min-h-11 flex-1">
-            انصراف
-          </Button>
+          {/* در دیالوگ‌های مخرب، فوکوس اول روی «انصراف» است تا Enter/دکمه وسط گوشی حذف نکند */}
+          {destructive ? (
+            <>
+              <Button variant="outline" onClick={() => onOpenChange(false)} disabled={loading} className="min-h-11 flex-1" autoFocus>
+                انصراف
+              </Button>
+              <Button variant="destructive" onClick={onConfirm} disabled={loading} className="min-h-11 flex-1">
+                {loading ? 'در حال انجام…' : confirmLabel}
+              </Button>
+            </>
+          ) : (
+            <>
+              <Button variant="default" onClick={onConfirm} disabled={loading} className="min-h-11 flex-1" autoFocus>
+                {loading ? 'در حال انجام…' : confirmLabel}
+              </Button>
+              <Button variant="outline" onClick={() => onOpenChange(false)} disabled={loading} className="min-h-11 flex-1">
+                انصراف
+              </Button>
+            </>
+          )}
         </DialogFooter>
       </DialogContent>
     </Dialog>
@@ -196,7 +210,7 @@ export function Field({
   )
 }
 
-// ================= ورودی عددی (با پشتیبانی ارقام فارسی) =================
+// ================= ورودی عددی (با پشتیبانی ارقام فارسی و ممیز «٫») =================
 export function NumberField({
   value,
   onChange,
@@ -205,6 +219,7 @@ export function NumberField({
   disabled,
   className,
   id,
+  allowNegative = true,
 }: {
   value: number | undefined
   onChange: (v: number | undefined) => void
@@ -213,11 +228,37 @@ export function NumberField({
   disabled?: boolean
   className?: string
   id?: string
+  /** پیش‌فرض true (مثل dBm منفی)؛ برای متراژها false بدهید */
+  allowNegative?: boolean
 }) {
   const [text, setText] = React.useState(value !== undefined ? String(value) : '')
+  const lastEmitted = React.useRef<number | undefined>(value)
+  const focused = React.useRef(false)
+
+  // همگام‌سازی از بیرون فقط وقتی مقدار جدید از تایپ کاربر نیامده
   React.useEffect(() => {
-    setText(value !== undefined ? String(value) : '')
+    if (!focused.current && value !== lastEmitted.current) {
+      setText(value !== undefined ? String(value) : '')
+      lastEmitted.current = value
+    }
   }, [value])
+
+  const sanitize = (raw: string): string => {
+    let t = toEnDigits(raw).replace(/٫/g, '.')
+    if (!allowNegative) t = t.replace(/-/g, '')
+    t = t.replace(/[^\d.-]/g, '')
+    // فقط یک منفیِ ابتدای رشته
+    if (allowNegative) {
+      const neg = t.startsWith('-')
+      t = t.replace(/-/g, '')
+      if (neg) t = `-${t}`
+    }
+    // فقط یک ممیز
+    const dot = t.indexOf('.')
+    if (dot !== -1) t = t.slice(0, dot + 1) + t.slice(dot + 1).replace(/\./g, '')
+    return t
+  }
+
   return (
     <div className={cn('relative', className)}>
       <Input
@@ -228,11 +269,32 @@ export function NumberField({
         value={text}
         disabled={disabled}
         placeholder={placeholder}
+        onFocus={() => {
+          focused.current = true
+        }}
+        onBlur={() => {
+          focused.current = false
+          // نرمال‌سازی نهایی پس از خروج از فیلد
+          const n = text === '' || text === '-' || text === '.' ? undefined : Number(text)
+          lastEmitted.current = Number.isFinite(n) ? n : undefined
+          setText(lastEmitted.current !== undefined ? String(lastEmitted.current) : '')
+          onChange(lastEmitted.current)
+        }}
         onChange={(e) => {
-          const t = toEnDigits(e.target.value).replace(/[^\d.\-]/g, '')
+          const t = sanitize(e.target.value)
           setText(t)
-          const n = t === '' ? undefined : Number(t)
-          onChange(n !== undefined && Number.isFinite(n) ? n : undefined)
+          if (t === '' || t === '-' || t === '.') {
+            // تایپ میانی نامعتبر → فیلد پاک نمی‌شود؛ فقط خروجی undefined می‌ماند
+            lastEmitted.current = undefined
+            onChange(undefined)
+            return
+          }
+          const n = Number(t)
+          if (Number.isFinite(n)) {
+            lastEmitted.current = n
+            onChange(n)
+          }
+          // عدد نامعتبر میانی: آخرین مقدار معتبر حفظ می‌شود و متن دست‌نخورده می‌ماند
         }}
       />
       {unit && <span className="pointer-events-none absolute inset-y-0 left-3 flex items-center text-xs text-muted-foreground">{unit}</span>}
@@ -246,11 +308,17 @@ export function JalaliDatePicker({
   onChange,
   placeholder = 'انتخاب تاریخ',
   disabled,
+  minIso,
+  maxIso,
 }: {
   value?: string // 'YYYY-MM-DD' میلادی
   onChange: (iso: string | undefined) => void
   placeholder?: string
   disabled?: boolean
+  /** کمینه تاریخ مجاز (برای دامنه «از–تا») */
+  minIso?: string
+  /** بیشینه تاریخ مجاز */
+  maxIso?: string
 }) {
   const [open, setOpen] = React.useState(false)
   const initialJ = isoToJalali(value) ?? isoToJalali(todayISO())!
@@ -323,20 +391,24 @@ export function JalaliDatePicker({
           ))}
           {Array.from({ length: daysInMonth }).map((_, i) => {
             const day = i + 1
+            const iso = jalaliToISO(viewYear, viewMonth, day)
+            const outOfRange = (minIso !== undefined && iso < minIso) || (maxIso !== undefined && iso > maxIso)
             const isSelected = selected && selected.jy === viewYear && selected.jm === viewMonth && selected.jd === day
             const isToday = todayJ.jy === viewYear && todayJ.jm === viewMonth && todayJ.jd === day
             return (
               <button
                 key={day}
                 type="button"
+                disabled={outOfRange}
                 onClick={() => {
-                  onChange(jalaliToISO(viewYear, viewMonth, day))
+                  onChange(iso)
                   setOpen(false)
                 }}
                 className={cn(
                   'flex h-9 items-center justify-center rounded-md text-sm transition-colors',
                   isSelected ? 'bg-primary text-primary-foreground font-bold' : 'hover:bg-accent',
-                  isToday && !isSelected && 'ring-1 ring-primary'
+                  isToday && !isSelected && 'ring-1 ring-primary',
+                  outOfRange && 'cursor-not-allowed opacity-30 hover:bg-transparent'
                 )}
               >
                 {toFa(day)}
@@ -351,7 +423,10 @@ export function JalaliDatePicker({
             size="sm"
             className="flex-1"
             onClick={() => {
-              onChange(todayISO())
+              const today = todayISO()
+              // «امروز» هم در محدوده مجاز clamp می‌شود
+              const clamped = minIso && today < minIso ? minIso : maxIso && today > maxIso ? maxIso : today
+              onChange(clamped)
               setOpen(false)
             }}
           >

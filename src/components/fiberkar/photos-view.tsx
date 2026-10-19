@@ -35,10 +35,23 @@ const categoryKeys = Object.keys(photoCategoryLabels) as PhotoCategory[]
 export default function PhotosView() {
   const params = useAppStore((s) => s.params)
 
+  // اعتبارسنجی دسته از پارامترها (مقدار نامعتبر → همه)
+  const isValidCategory = (v: string | undefined): v is PhotoCategory =>
+    !!v && (Object.keys(photoCategoryLabels) as string[]).includes(v)
+
   // فیلترهای نمایش گالری
   const [filterProjectId, setFilterProjectId] = React.useState<string>(params.projectId ?? 'all')
-  const [filterCategory, setFilterCategory] = React.useState<PhotoCategory | 'all'>(params.category ?? 'all')
+  const [filterCategory, setFilterCategory] = React.useState<PhotoCategory | 'all'>(
+    isValidCategory(params.category) ? params.category : 'all'
+  )
   const [sort, setSort] = React.useState<SortKey>('newest')
+
+  // همگام‌سازی فیلترها با پارامترهای ناوبری (ورود عمیق از جست‌وجو/جزئیات)
+  React.useEffect(() => {
+    setFilterProjectId(params.projectId ?? 'all')
+    setFilterCategory(isValidCategory(params.category) ? params.category : 'all')
+     
+  }, [params.projectId, params.category])
 
   // زمینه ثبت عکس جدید (پروژه اختیاری، دسته الزامی)
   const [pickerProjectId, setPickerProjectId] = React.useState<string>('none')
@@ -64,6 +77,21 @@ export default function PhotosView() {
     () => (filteredPhotos ?? []).reduce((sum, p) => sum + p.size, 0),
     [filteredPhotos]
   )
+
+  // ---------- لینک عمیق: باز شدن پیش‌نمایش برای photoId (فقط یک بار در هر نشانی) ----------
+  const deepPhotoConsumedRef = React.useRef(false)
+  React.useEffect(() => {
+    deepPhotoConsumedRef.current = false
+  }, [params.photoId])
+  React.useEffect(() => {
+    if (deepPhotoConsumedRef.current) return
+    const id = params.photoId
+    if (!id || !filteredPhotos) return
+    deepPhotoConsumedRef.current = true
+    const rec = filteredPhotos.find((p) => p.id === id)
+    if (rec) setPreview(rec)
+     
+  }, [filteredPhotos, params.photoId])
 
   // مرتب‌سازی سفارشی — فقط برای «قدیمی‌ترین/عنوان» (جدیدترین را خود PhotoGallery رندر می‌کند)
   const sortedPhotos = React.useMemo(() => {

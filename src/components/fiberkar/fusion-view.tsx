@@ -170,6 +170,8 @@ export default function FusionView() {
   const [form, setForm] = React.useState<FusionForm>(() => emptyForm(params.projectId, params.routeId, params.boxId))
   const [errors, setErrors] = React.useState<FusionErrors>({})
   const [busy, setBusy] = React.useState(false)
+  // بنر موفقیت در حالت ایجاد (دیالوگ باز می‌ماند تا عکس با شناسه واقعی پیوست شود)
+  const [created, setCreated] = React.useState(false)
 
   // ---------- حذف ----------
   const [deleteTarget, setDeleteTarget] = React.useState<Fusion | null>(null)
@@ -206,10 +208,18 @@ export default function FusionView() {
   }, [boxes, form.projectId, form.routeId, form.boxId])
 
   // ---------- کنترل فرم ----------
+  // پیش‌فرض ایجاد: از فیلترهای فعال کاربر، با بازگشت به پارامترهای ناوبری
   function openCreate() {
-    setForm(emptyForm(params.projectId, params.routeId, params.boxId))
+    setForm(
+      emptyForm(
+        filterProject ?? params.projectId,
+        filterRoute ?? params.routeId,
+        filterBox ?? params.boxId
+      )
+    )
     setEditingId(null)
     setErrors({})
+    setCreated(false)
     setDialogOpen(true)
   }
 
@@ -218,23 +228,27 @@ export default function FusionView() {
       projectId: f.projectId,
       routeId: f.routeId,
       boxId: f.boxId,
-      connectionId: f.connectionId,
-      fiberNumbers: f.fiberNumbers,
-      tubeNumber: f.tubeNumber,
-      cableSpec: f.cableSpec,
-      deviceModel: f.deviceModel,
-      result: f.result,
+      connectionId: f.connectionId ?? '',
+      fiberNumbers: f.fiberNumbers ?? '',
+      tubeNumber: f.tubeNumber ?? '',
+      cableSpec: f.cableSpec ?? '',
+      deviceModel: f.deviceModel ?? '',
+      result: f.result ?? '',
       fusionDate: f.fusionDate,
-      description: f.description,
+      description: f.description ?? '',
     })
     setEditingId(f.id)
     setErrors({})
+    setCreated(false)
     setDialogOpen(true)
   }
 
   function handleDialogChange(open: boolean) {
     setDialogOpen(open)
-    if (!open) setErrors({})
+    if (!open) {
+      setErrors({})
+      setCreated(false)
+    }
   }
 
   function setFormProject(id: string | undefined) {
@@ -283,9 +297,10 @@ export default function FusionView() {
         toast.success(messages.updated)
         setDialogOpen(false)
       } else {
-        const created = await createFusion(input)
-        setEditingId(created.id)
+        const rec = await createFusion(input)
+        setEditingId(rec.id)
         setErrors({})
+        setCreated(true)
         toast.success(messages.saved)
       }
     } catch {
@@ -308,6 +323,21 @@ export default function FusionView() {
       setDeleteBusy(false)
     }
   }
+
+  // ---------- لینک عمیق: باز شدن خودکار ویرایش برای fusionId (فقط یک بار در هر نشانی) ----------
+  const deepLinkConsumedRef = React.useRef(false)
+  React.useEffect(() => {
+    deepLinkConsumedRef.current = false
+  }, [params.fusionId])
+  React.useEffect(() => {
+    if (deepLinkConsumedRef.current) return
+    const id = params.fusionId
+    if (!id || !fusions) return
+    deepLinkConsumedRef.current = true
+    const rec = fusions.find((x) => x.id === id)
+    if (rec) openEdit(rec)
+     
+  }, [fusions, params.fusionId])
 
   // ================= رندر =================
   return (
@@ -435,12 +465,28 @@ export default function FusionView() {
       {/* دیالوگ ثبت/ویرایش */}
       <Dialog open={dialogOpen} onOpenChange={handleDialogChange}>
         <DialogContent dir="rtl" className="max-h-[85vh] max-w-lg overflow-y-auto">
+          <form
+            onSubmit={(e) => {
+              e.preventDefault()
+              handleSave()
+            }}
+            className="flex flex-col gap-4"
+          >
           <DialogHeader>
             <DialogTitle>{editingId ? 'ویرایش فیوژن' : 'ثبت فیوژن جدید'}</DialogTitle>
             <DialogDescription>
               {editingId ? 'اطلاعات فیوژن را ویرایش و ذخیره کنید.' : 'اطلاعات اتصال فیوژن را تکمیل و ذخیره کنید.'}
             </DialogDescription>
           </DialogHeader>
+
+          {created && (
+            <div
+              role="status"
+              className="flex items-center gap-2 rounded-lg border border-primary/30 bg-primary/10 px-3 py-2.5 text-sm font-medium text-primary"
+            >
+              ذخیره شد ✓ — اکنون می‌توانید برای این مورد عکس ثبت کنید یا مشخصات را تکمیل کنید
+            </div>
+          )}
 
           <div className="flex flex-col gap-4">
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
@@ -631,14 +677,15 @@ export default function FusionView() {
           </div>
 
           <DialogFooter className="flex-row justify-start gap-2">
-            <Button onClick={handleSave} disabled={busy} className="min-h-11 flex-1">
+            <Button type="submit" disabled={busy} className="min-h-11 flex-1">
               {busy && <Loader2 className="size-4 animate-spin" />}
               {editingId ? 'ذخیره تغییرات' : 'ثبت و ذخیره'}
             </Button>
-            <Button variant="outline" onClick={() => setDialogOpen(false)} disabled={busy} className="min-h-11 flex-1">
+            <Button variant="outline" type="button" onClick={() => setDialogOpen(false)} disabled={busy} className="min-h-11 flex-1">
               بستن
             </Button>
           </DialogFooter>
+          </form>
         </DialogContent>
       </Dialog>
 
@@ -673,17 +720,22 @@ function FusionCard({
 }) {
   const box = f.boxId ? boxMap.get(f.boxId) : undefined
 
+  // خوانش دفاعی — یک رکورد بازگردی‌شده ناقص هرگز نباید نمای را بشکند
+  const tubeNumber = (f.tubeNumber ?? '').trim()
+  const connectionId = (f.connectionId ?? '').trim()
+  const result = (f.result ?? '').trim()
+
   const subtitleBits: string[] = []
-  if (f.tubeNumber.trim()) subtitleBits.push(`تیوب: ${toFa(f.tubeNumber)}`)
-  if (f.cableSpec.trim()) subtitleBits.push(f.cableSpec)
+  if (tubeNumber) subtitleBits.push(`تیوب: ${toFa(tubeNumber)}`)
+  if (f.cableSpec?.trim()) subtitleBits.push(f.cableSpec)
 
   return (
     <ItemCard
       title={
-        f.connectionId.trim() ? (
+        connectionId ? (
           <span className="flex items-center gap-1.5">
             اتصال
-            <span dir="ltr">{f.connectionId}</span>
+            <span dir="ltr">{connectionId}</span>
           </span>
         ) : (
           'فیوژن'
@@ -694,14 +746,14 @@ function FusionCard({
         <>
           <span className="flex items-center gap-1">
             <Link2 className="size-3.5 shrink-0" />
-            {`تارها: ${toFa(f.fiberNumbers)}`}
+            {`تارها: ${toFa(f.fiberNumbers ?? '—')}`}
           </span>
-          {f.result.trim() && (
+          {result && (
             <span className="flex items-center gap-1">
               <Gauge className="size-3.5 shrink-0" />
               نتیجه:
               <span dir="ltr" className="font-medium text-foreground">
-                {f.result}
+                {result}
               </span>
             </span>
           )}
@@ -726,12 +778,12 @@ function FusionCard({
 function RowMenu({ onEdit, onDelete }: { onEdit: () => void; onDelete: () => void }) {
   return (
     <DropdownMenu dir="rtl">
-      <DropdownMenuTrigger asChild>
+      <DropdownMenuTrigger asChild onClick={(e) => e.stopPropagation()}>
         <Button variant="ghost" size="icon" className="size-11 shrink-0" aria-label="گزینه‌های بیشتر">
           <MoreVertical className="size-4" />
         </Button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" className="min-w-32">
+      <DropdownMenuContent align="end" className="min-w-32" onClick={(e) => e.stopPropagation()}>
         <DropdownMenuItem onClick={onEdit}>
           <Pencil className="size-4" />
           ویرایش

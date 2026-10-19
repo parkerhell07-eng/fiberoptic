@@ -26,10 +26,14 @@ export async function processImageFile(
 
   const blob = await drawToBlob(bitmap, width, height, quality)
 
-  const tScale = Math.min(1, thumbDim / Math.max(width, height))
-  const tW = Math.max(1, Math.round(width * tScale))
-  const tH = Math.max(1, Math.round(height * tScale))
-  const thumb = await drawToDataUrl(bitmap, tW, tH, 0.75)
+  // thumbDim = 0 → بدون بندانگشتی (مسیر PDF — جلوگیری از انکود دوم بی‌استفاده)
+  let thumb = ''
+  if (thumbDim > 0) {
+    const tScale = Math.min(1, thumbDim / Math.max(width, height))
+    const tW = Math.max(1, Math.round(width * tScale))
+    const tH = Math.max(1, Math.round(height * tScale))
+    thumb = await drawToDataUrl(bitmap, tW, tH, 0.75)
+  }
 
   if (!(bitmap instanceof HTMLImageElement)) bitmap.close()
   return { blob, thumb, width, height }
@@ -38,9 +42,14 @@ export async function processImageFile(
 async function loadBitmap(file: File | Blob): Promise<ImageBitmap | HTMLImageElement> {
   if (typeof createImageBitmap === 'function') {
     try {
-      return await createImageBitmap(file)
+      // from-image → احترام به چرخش EXIF (عکس‌های چرخیده در برخی WebViewها)
+      return await createImageBitmap(file, { imageOrientation: 'from-image' })
     } catch {
-      // ادامه با fallback
+      try {
+        return await createImageBitmap(file)
+      } catch {
+        // ادامه با fallback
+      }
     }
   }
   const url = URL.createObjectURL(file)
@@ -68,6 +77,9 @@ function drawToBlob(
   canvas.height = h
   const ctx = canvas.getContext('2d')
   if (!ctx) throw new Error('پردازش تصویر در این مرورگر پشتیبانی نمی‌شود')
+  // پس‌زمینه سفید — PNGهای شفاف در JPEG سیاه نمیشوند
+  ctx.fillStyle = '#ffffff'
+  ctx.fillRect(0, 0, w, h)
   ctx.drawImage(bitmap as CanvasImageSource, 0, 0, w, h)
   return new Promise((resolve, reject) => {
     canvas.toBlob(
@@ -89,6 +101,8 @@ function drawToDataUrl(
   canvas.height = h
   const ctx = canvas.getContext('2d')
   if (!ctx) throw new Error('پردازش تصویر در این مرورگر پشتیبانی نمی‌شود')
+  ctx.fillStyle = '#ffffff'
+  ctx.fillRect(0, 0, w, h)
   ctx.drawImage(bitmap as CanvasImageSource, 0, 0, w, h)
   return Promise.resolve(canvas.toDataURL('image/jpeg', quality))
 }
@@ -109,13 +123,13 @@ export async function dataUrlToBlob(dataUrl: string): Promise<Blob> {
   return res.blob()
 }
 
-/** dataURL با ابعاد محدود برای گزارش PDF (مدیریت حافظه) */
+/** dataURL با ابعاد محدود برای گزارش PDF (مدیریت حافظه) — شکست یک عکس کل گزارش را نمی‌کشد */
 export async function blobToReportDataUrl(blob: Blob, maxDim = 900, quality = 0.8): Promise<string> {
   try {
-    const img: ProcessedImage = await processImageFile(blob, { maxDim, quality, thumbDim: maxDim })
+    const img: ProcessedImage = await processImageFile(blob, { maxDim, quality, thumbDim: 0 })
     return await blobToDataUrl(img.blob)
   } catch {
-    return await blobToDataUrl(blob)
+    return await blobToDataUrl(blob) // ممکن است پرتاب شود — فراخواننده هم try/catch دارد
   }
 }
 

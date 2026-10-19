@@ -18,6 +18,7 @@ export interface Project {
   status: ProjectStatus
   description: string
   archived: 0 | 1
+  pinned?: 0 | 1 // سنجاق‌شده در داشبورد/لیست (v1.1)
   createdAt: number
   updatedAt: number
 }
@@ -218,13 +219,18 @@ export interface Photo extends PhotoLink {
   category: PhotoCategory
   title: string
   description: string
-  blob: Blob // اصل عکس (فشرده‌شده) — فضای اختصاصی اپ (IndexedDB)
   thumb: string // تصویر بندانگشتی dataURL برای لیست‌ها (مدیریت حافظه)
   width: number
   height: number
   size: number // بایت
   mime: string
   createdAt: number
+}
+
+/** رکورد blob عکس — در جدول جداگانه ذخیره می‌شود تا لیست‌ها هرگز blob را به RAM نمی‌آورند */
+export interface PhotoBlobRow {
+  id: ID // هم‌مقدار با id عکس
+  blob: Blob // اصل عکس (فشرده‌شده) — فضای اختصاصی اپ (IndexedDB)
 }
 
 // ================= تنظیمات =================
@@ -259,6 +265,7 @@ export const BACKUP_TABLES = [
   'dropCables',
   'profiles',
   'photos',
+  'photoBlobs',
 ] as const
 
 export type BackupTableName = (typeof BACKUP_TABLES)[number]

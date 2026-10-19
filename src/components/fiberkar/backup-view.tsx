@@ -1,7 +1,8 @@
 'use client'
 
 // فایبرکار — پشتیبان‌گیری و بازیابی (کاملاً محلی و آفلاین)
-// جریان: وضعیت داده‌ها → تهیه پشتیبان → بررسی سلامت → بازیابی با تأیید دومرحله‌ای → منطقه خطر
+// جریان: وضعیت داده‌ها (+ فضای ذخیره‌سازی) → تهیه پشتیبان با پیشرفت زنده → بررسی سلامت →
+//        بازیابی با تأیید دومرحله‌ای و پیشرفت زنده → سلامت داده‌ها → منطقه خطر
 import * as React from 'react'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { toast } from 'sonner'
@@ -24,7 +25,9 @@ import {
   Loader2,
   RotateCcw,
   Route as RouteIcon,
+  SearchCheck,
   ShieldCheck,
+  Stethoscope,
   Trash2,
   UserRound,
   Zap,
@@ -39,6 +42,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
+import { Progress } from '@/components/ui/progress'
 import { Skeleton } from '@/components/ui/skeleton'
 import { ConfirmDialog, InfoRow, PageHeader, StatCard } from '@/components/fiberkar/primitives'
 import {
@@ -46,10 +50,13 @@ import {
   createBackupBlob,
   restoreBackup,
   saveBlobToDisk,
-  verifyBackupBlob,
+  verifyAndParseBackupBlob,
+  type BackupPhase,
+  type RestorePhase,
   type VerifyResult,
 } from '@/lib/backup'
-import { db, getLastBackupInfo, resetAllData } from '@/lib/localdb'
+import { scanDataHealth, tableFa, type DataHealthReport } from '@/lib/data-health'
+import { db, deletePhotos, getLastBackupInfo, resetAllData } from '@/lib/localdb'
 import { formatBytes, formatJalaliDateTime, toFa } from '@/lib/persian'
 import { viewTitles } from '@/lib/labels'
 import { useAppStore } from '@/store/app-store'
@@ -68,6 +75,30 @@ const TABLE_LABELS: Record<string, string> = {
 }
 
 type RestoreMode = 'replace' | 'merge'
+type ProgressInfo = { phase: BackupPhase | RestorePhase; done: number; total: number }
+
+/** برچسب فارسی هر فاز پیشرفت */
+function progressLabel(p: ProgressInfo): string {
+  switch (p.phase) {
+    case 'read':
+      return 'خواندن داده‌ها…'
+    case 'photos':
+      return `پردازش عکس ${toFa(p.done)} از ${toFa(p.total)}`
+    case 'finalize':
+      return 'ساخت فایل…'
+    case 'validate':
+      return 'بررسی فایل…'
+    case 'write':
+      return 'نوشتن داده‌ها…'
+    default:
+      return 'در حال انجام…'
+  }
+}
+
+function progressPercent(p: ProgressInfo): number {
+  if (p.total <= 0) return 100
+  return Math.min(100, Math.round((p.done / p.total) * 100))
+}
 
 /** خلاصه یک‌خطی شمارش رکوردها */
 function countsSummary(counts?: Record<string, number>): string {
@@ -105,19 +136,52 @@ export default function BackupView() {
     return { projects, routes, boxes, operations, fusions, powerTests, dropCables, profiles, photos, photoBytes }
   }, [])
 
+  // ---------- فضای ذخیره‌سازی مرورگر (navigator.storage.estimate) ----------
+  const [storage, setStorage] = React.useState<{ usage: number; quota: number } | null>(null)
+  const storageApiAvailable = typeof navigator !== 'undefined' && typeof navigator.storage?.estimate === 'function'
+  React.useEffect(() => {
+    if (!storageApiAvailable) return
+    let cancelled = false
+    navigator.storage
+      .estimate()
+      .then((est) => {
+        if (cancelled) return
+        if (typeof est.usage === 'number' && typeof est.quota === 'number' && est.quota > 0) {
+          setStorage({ usage: est.usage, quota: est.quota })
+        }
+      })
+      .catch(() => {
+        /* عدم دسترسی به API — بخش به‌آرایی پنهان می‌شود */
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [storageApiAvailable])
+
   // ---------- ۲) آخرین پشتیبان ----------
   const lastBackup = useLiveQuery(() => getLastBackupInfo(), [])
 
-  // ---------- ۳) تهیه پشتیبان جدید ----------
+  // ---------- ۳) تهیه پشتیبان جدید (با پیشرفت زنده) ----------
   const [creating, setCreating] = React.useState(false)
+  const [backupProgress, setBackupProgress] = React.useState<ProgressInfo | null>(null)
+
   async function handleCreateBackup() {
     setCreating(true)
+    setBackupProgress({ phase: 'read', done: 0, total: 1 })
     try {
-      const { blob, info } = await createBackupBlob()
+      const { blob, info } = await createBackupBlob((phase, done, total) => setBackupProgress({ phase, done, total }))
+      setBackupProgress(null)
       const how = await saveBlobToDisk(blob, backupFileName())
-      toast.success(`پشتیبان ذخیره شد (${formatBytes(info.size)})`, {
-        description: how === 'picker' ? 'فایل در محل انتخابی شما ذخیره شد' : 'فایل در حافظه دستگاه ذخیره شد (پوشه اسناد یا دانلودها)',
-      })
+      if (how === 'shared') {
+        toast.success('فایل برای اشتراک‌گذاری آماده شد', {
+          description: `حجم پشتیبان: ${formatBytes(info.size)}`,
+        })
+      } else {
+        toast.success(`پشتیبان ذخیره شد (${formatBytes(info.size)})`, {
+          description:
+            how === 'picker' ? 'فایل در محل انتخابی شما ذخیره شد' : 'فایل در حافظه دستگاه ذخیره شد (پوشه اسناد یا دانلودها)',
+        })
+      }
     } catch (e) {
       if ((e as Error)?.name === 'AbortError') {
         toast.info('ذخیره فایل لغو شد', {
@@ -129,11 +193,12 @@ export default function BackupView() {
         })
       }
     } finally {
+      setBackupProgress(null)
       setCreating(false)
     }
   }
 
-  // ---------- ۴) بررسی سلامت فایل ----------
+  // ---------- ۴) بررسی سلامت فایل (پارس یک‌باره) ----------
   const verifyInputRef = React.useRef<HTMLInputElement>(null)
   const [verifying, setVerifying] = React.useState(false)
   const [verifyFileName, setVerifyFileName] = React.useState('')
@@ -144,8 +209,8 @@ export default function BackupView() {
     setVerifying(true)
     setVerifyResult(null)
     try {
-      const res = await verifyBackupBlob(file)
-      setVerifyResult(res)
+      const { verify } = await verifyAndParseBackupBlob(file)
+      setVerifyResult(verify)
     } catch {
       setVerifyResult({ ok: false, error: 'بررسی فایل ممکن نشد' })
     } finally {
@@ -153,7 +218,7 @@ export default function BackupView() {
     }
   }
 
-  // ---------- ۵) بازیابی (با تأیید دومرحله‌ای) ----------
+  // ---------- ۵) بازیابی (با تأیید دومرحله‌ای و پیشرفت زنده) ----------
   const restoreInputRef = React.useRef<HTMLInputElement>(null)
   const [restoreFile, setRestoreFile] = React.useState<File | null>(null)
   const [restoreVerify, setRestoreVerify] = React.useState<VerifyResult | null>(null)
@@ -162,15 +227,16 @@ export default function BackupView() {
   const [pendingMode, setPendingMode] = React.useState<RestoreMode | null>(null)
   const [confirmOpen, setConfirmOpen] = React.useState(false)
   const [restoring, setRestoring] = React.useState(false)
+  const [restoreProgress, setRestoreProgress] = React.useState<ProgressInfo | null>(null)
 
   async function handleRestoreFile(file: File) {
     setRestoreChecking(true)
     setRestoreFile(file)
     setRestoreVerify(null)
     try {
-      const res = await verifyBackupBlob(file)
-      setRestoreVerify(res)
-      if (res.ok) setModeDialogOpen(true) // فایل سالم است → انتخاب حالت
+      const { verify } = await verifyAndParseBackupBlob(file)
+      setRestoreVerify(verify)
+      if (verify.ok) setModeDialogOpen(true) // فایل سالم است → انتخاب حالت
     } catch {
       setRestoreVerify({ ok: false, error: 'بررسی فایل ممکن نشد' })
     } finally {
@@ -187,8 +253,11 @@ export default function BackupView() {
   async function handleRestore() {
     if (!restoreFile || !pendingMode) return
     setRestoring(true)
+    setRestoreProgress({ phase: 'validate', done: 0, total: 1 })
     try {
-      const res = await restoreBackup(restoreFile, pendingMode)
+      const res = await restoreBackup(restoreFile, pendingMode, (phase, done, total) =>
+        setRestoreProgress({ phase, done, total })
+      )
       const totalRestored = sumCounts(res.restored)
       const totalSkipped = sumCounts(res.skipped)
       const perTable = Object.entries(res.restored)
@@ -216,11 +285,50 @@ export default function BackupView() {
       toast.error('بازیابی ناموفق بود', { description: (e as Error)?.message || 'خطای ناشناخته' })
       setConfirmOpen(false)
     } finally {
+      setRestoreProgress(null)
       setRestoring(false)
     }
   }
 
-  // ---------- ۶) منطقه خطر: پاک‌سازی کامل ----------
+  // ---------- ۶) سلامت داده‌ها (اسکن صداقت داده) ----------
+  const [health, setHealth] = React.useState<DataHealthReport | null>(null)
+  const [scanning, setScanning] = React.useState(false)
+  const [healthError, setHealthError] = React.useState<string | null>(null)
+  const [orphanConfirmOpen, setOrphanConfirmOpen] = React.useState(false)
+  const [deletingOrphans, setDeletingOrphans] = React.useState(false)
+
+  async function runHealthScan() {
+    setScanning(true)
+    setHealthError(null)
+    try {
+      setHealth(await scanDataHealth())
+    } catch (e) {
+      setHealthError((e as Error)?.message || 'بررسی سلامت داده‌ها ممکن نشد')
+    } finally {
+      setScanning(false)
+    }
+  }
+
+  async function handleDeleteOrphans() {
+    if (!health || health.orphanPhotos.length === 0) return
+    setDeletingOrphans(true)
+    try {
+      await deletePhotos(health.orphanPhotos)
+      toast.success(`${toFa(health.orphanPhotos.length)} عکس یتیم حذف شد`, {
+        description: 'فقط عکس‌های بدون والد معتبر حذف شدند؛ سایر داده‌ها دست‌نخورده ماندند',
+      })
+      setOrphanConfirmOpen(false)
+      await runHealthScan() // بازرسی مجدد پس از پاک‌سازی
+    } catch (e) {
+      toast.error('حذف عکس‌های یتیم ناموفق بود', {
+        description: (e as Error)?.message || 'خطای ناشناخته',
+      })
+    } finally {
+      setDeletingOrphans(false)
+    }
+  }
+
+  // ---------- ۷) منطقه خطر: پاک‌سازی کامل ----------
   const [wipeStage, setWipeStage] = React.useState<1 | 2 | null>(null)
   const [wiping, setWiping] = React.useState(false)
 
@@ -238,6 +346,11 @@ export default function BackupView() {
       setWiping(false)
     }
   }
+
+  const busy = creating || restoring // هنگام پشتیبان‌گیری/بازیابی هیچ عملیات موازی نباید شروع شود
+  const healthProblemCount = health
+    ? health.orphanRecords.length + health.meterAnomalies.length + health.unknownStatus.length
+    : 0
 
   return (
     <div className="space-y-4">
@@ -274,6 +387,30 @@ export default function BackupView() {
                 tone="amber"
               />
             </div>
+
+            {/* فضای ذخیره‌سازی مرورگر — اگر API موجود نباشد پنهان می‌شود */}
+            {storage && (
+              <div className="mt-4 rounded-lg border bg-muted/30 p-3">
+                <div className="flex flex-wrap items-center justify-between gap-1 text-xs">
+                  <span className="flex items-center gap-1.5 font-medium">
+                    <HardDrive className="size-3.5 text-primary" aria-hidden />
+                    فضای ذخیره‌سازی مرورگر
+                  </span>
+                  <span className="tabular-nums text-muted-foreground">
+                    {formatBytes(storage.usage)} از {formatBytes(storage.quota)}
+                  </span>
+                </div>
+                <Progress
+                  value={Math.min(100, (storage.usage / storage.quota) * 100)}
+                  className="mt-2 h-2"
+                  aria-label={`مصرف فضای ذخیره‌سازی: ${formatBytes(storage.usage)} از ${formatBytes(storage.quota)}`}
+                />
+                <p className="mt-1.5 text-[11px] leading-5 text-muted-foreground">
+                  شامل داده‌ها و عکس‌های فیبرکار روی همین دستگاه. برای آزادسازی فضا، پشتیبان تهیه کنید و عکس‌های اضافی را حذف کنید.
+                </p>
+              </div>
+            )}
+
             <p className="mt-3 text-xs text-muted-foreground">
               این داده‌ها فقط در حافظه همین دستگاه (آفلاین) نگه‌داری می‌شوند؛ تهیه پشتیبان دوره‌ای توصیه می‌شود.
             </p>
@@ -323,10 +460,19 @@ export default function BackupView() {
           <ShieldCheck className="size-4 text-primary" aria-hidden />
           <h2 className="text-sm font-semibold">تهیه پشتیبان جدید</h2>
         </div>
-        <Button onClick={() => void handleCreateBackup()} disabled={creating} className="min-h-12 w-full text-base">
+        <Button onClick={() => void handleCreateBackup()} disabled={busy} className="min-h-12 w-full text-base">
           {creating ? <Loader2 className="size-5 animate-spin" aria-hidden /> : <HardDriveDownload className="size-5" aria-hidden />}
           {creating ? 'در حال تهیه پشتیبان…' : 'تهیه و ذخیره پشتیبان'}
         </Button>
+        {backupProgress && (
+          <div className="mt-3" role="status" aria-live="polite">
+            <div className="mb-1.5 flex items-center justify-between text-xs text-muted-foreground">
+              <span>{progressLabel(backupProgress)}</span>
+              <span className="tabular-nums">{toFa(progressPercent(backupProgress))}٪</span>
+            </div>
+            <Progress value={progressPercent(backupProgress)} className="h-2" aria-label={progressLabel(backupProgress)} />
+          </div>
+        )}
         <p className="mt-2 flex items-start gap-1.5 text-xs text-muted-foreground">
           <Info className="mt-0.5 size-3.5 shrink-0" aria-hidden />
           فایل شامل تمام داده‌ها و عکس‌هاست؛ آن را در محل امن نگه دارید.
@@ -354,7 +500,7 @@ export default function BackupView() {
         <Button
           variant="outline"
           className="min-h-11 w-full"
-          disabled={verifying}
+          disabled={busy || verifying}
           onClick={() => verifyInputRef.current?.click()}
         >
           {verifying ? <Loader2 className="size-4 animate-spin" aria-hidden /> : <FileUp className="size-4" aria-hidden />}
@@ -394,18 +540,28 @@ export default function BackupView() {
           aria-label="انتخاب فایل پشتیبان برای بازیابی"
           onChange={(e) => {
             const f = e.target.files?.[0]
+            e.target.value = '' // همیشه بازنشانی — انتخاب دوباره همان فایل هم رویداد change می‌دهد
             if (f) void handleRestoreFile(f)
           }}
         />
         <Button
           variant="outline"
           className="min-h-11 w-full"
-          disabled={restoreChecking}
+          disabled={busy || restoreChecking}
           onClick={() => restoreInputRef.current?.click()}
         >
           {restoreChecking ? <Loader2 className="size-4 animate-spin" aria-hidden /> : <FileUp className="size-4" aria-hidden />}
           {restoreChecking ? 'در حال بررسی فایل…' : 'انتخاب فایل برای بازیابی'}
         </Button>
+        {restoreProgress && (
+          <div className="mt-3" role="status" aria-live="polite">
+            <div className="mb-1.5 flex items-center justify-between text-xs text-muted-foreground">
+              <span>{progressLabel(restoreProgress)}</span>
+              <span className="tabular-nums">{toFa(progressPercent(restoreProgress))}٪</span>
+            </div>
+            <Progress value={progressPercent(restoreProgress)} className="h-2" aria-label={progressLabel(restoreProgress)} />
+          </div>
+        )}
         {restoreVerify && !restoreVerify.ok && (
           <Alert variant="destructive" className="mt-3">
             <AlertTriangle className="size-4" />
@@ -423,14 +579,94 @@ export default function BackupView() {
               نسخه: {toFa(`v${restoreVerify.version ?? '—'}`)}
               {restoreVerify.counts ? ` — ${countsSummary(restoreVerify.counts)}` : ''}
             </div>
-            <Button className="mt-3 min-h-11 w-full" onClick={() => setModeDialogOpen(true)}>
+            <Button className="mt-3 min-h-11 w-full" onClick={() => setModeDialogOpen(true)} disabled={busy}>
               انتخاب حالت بازیابی
             </Button>
           </div>
         )}
       </section>
 
-      {/* ۶) منطقه خطر */}
+      {/* ۶) سلامت داده‌ها */}
+      <section className="rounded-xl border bg-card p-4" aria-label="سلامت داده‌ها">
+        <div className="mb-3 flex items-center gap-2">
+          <Stethoscope className="size-4 text-primary" aria-hidden />
+          <h2 className="text-sm font-semibold">سلامت داده‌ها</h2>
+        </div>
+        <p className="mb-3 text-xs leading-6 text-muted-foreground">
+          این بررسی داده‌های شما را می‌کارد: عکس‌های بی‌والد (یتیم)، رکوردهایی که پروژه یا باکس والدشان حذف شده،
+          مغایرت‌های متراژ دراپ‌کابل و وضعیت‌های ناشناخته. نتیجه: همیشه به گزارش‌ها و آمار خودتان اعتماد داشته باشید.
+        </p>
+        <Button variant="outline" className="min-h-11 w-full" onClick={() => void runHealthScan()} disabled={busy || scanning}>
+          {scanning ? <Loader2 className="size-4 animate-spin" aria-hidden /> : <SearchCheck className="size-4" aria-hidden />}
+          {scanning ? 'در حال بررسی…' : 'بررسی سلامت داده‌ها'}
+        </Button>
+
+        {healthError && (
+          <Alert variant="destructive" className="mt-3">
+            <AlertTriangle className="size-4" />
+            <AlertTitle>بررسی ناموفق بود</AlertTitle>
+            <AlertDescription>{healthError}</AlertDescription>
+          </Alert>
+        )}
+
+        {health && (
+          <div className="mt-3 space-y-2">
+            <p className="text-xs text-muted-foreground">آخرین بررسی: {formatJalaliDateTime(health.checkedAt)}</p>
+
+            <div className="grid grid-cols-2 gap-2">
+              <HealthCountRow
+                icon={<ImageIcon className="size-4" />}
+                label="عکس یتیم"
+                count={health.orphanPhotos.length}
+              />
+              <HealthCountRow
+                icon={<Database className="size-4" />}
+                label="رکورد بی‌پیوند"
+                count={health.orphanRecords.length}
+              />
+              <HealthCountRow
+                icon={<Cable className="size-4" />}
+                label="مغایرت متراژ"
+                count={health.meterAnomalies.length}
+              />
+              <HealthCountRow
+                icon={<AlertTriangle className="size-4" />}
+                label="وضعیت ناشناخته"
+                count={health.unknownStatus.length}
+              />
+            </div>
+
+            {healthProblemCount === 0 && health.orphanPhotos.length === 0 ? (
+              <Alert className="border-emerald-600/40 bg-emerald-500/10 text-emerald-900 dark:text-emerald-200 [&>svg]:text-emerald-700 dark:[&>svg]:text-emerald-300">
+                <CheckCircle2 className="size-4" />
+                <AlertTitle>همه‌چیز سالم است</AlertTitle>
+                <AlertDescription>هیچ عکس یتیم، رکورد بی‌پیوند، مغایرت متراژ یا وضعیت ناشناخته‌ای پیدا نشد.</AlertDescription>
+              </Alert>
+            ) : (
+              <>
+                {health.orphanPhotos.length > 0 && (
+                  <Button
+                    variant="destructive"
+                    className="min-h-11 w-full"
+                    onClick={() => setOrphanConfirmOpen(true)}
+                    disabled={busy || deletingOrphans}
+                  >
+                    <Trash2 className="size-4" aria-hidden />
+                    حذف عکس‌های یتیم ({toFa(health.orphanPhotos.length)})
+                  </Button>
+                )}
+                <HealthFindings health={health} />
+                <p className="text-xs leading-5 text-muted-foreground">
+                  فقط عکس‌های یتیم قابل حذف خودکار هستند؛ سایر موارد فقط هشدار داده می‌شوند و رکوردی حذف نمی‌شود —
+                  تصمیم با شماست تا هیچ داده‌ای بی‌اجازه از دست نرود.
+                </p>
+              </>
+            )}
+          </div>
+        )}
+      </section>
+
+      {/* ۷) منطقه خطر */}
       <section
         className="rounded-xl border border-destructive/60 bg-destructive/5 p-4"
         aria-label="منطقه خطر"
@@ -442,7 +678,7 @@ export default function BackupView() {
         <p className="mb-3 text-xs text-muted-foreground">
           پاک‌سازی کامل، همه داده‌ها و عکس‌های ثبت‌شده روی این دستگاه را برای همیشه حذف می‌کند. پیش از ادامه پشتیبان تهیه کنید.
         </p>
-        <Button variant="destructive" className="min-h-11 w-full" onClick={() => setWipeStage(1)}>
+        <Button variant="destructive" className="min-h-11 w-full" onClick={() => setWipeStage(1)} disabled={busy || wiping}>
           <Trash2 className="size-4" aria-hidden />
           پاک‌سازی کامل داده‌ها
         </Button>
@@ -526,6 +762,20 @@ export default function BackupView() {
         onConfirm={() => void handleRestore()}
       />
 
+      {/* تأیید حذف عکس‌های یتیم */}
+      <ConfirmDialog
+        open={orphanConfirmOpen}
+        onOpenChange={(o) => {
+          if (!o) setOrphanConfirmOpen(false)
+        }}
+        title={`حذف ${health ? toFa(health.orphanPhotos.length) : ''} عکس یتیم`}
+        description="عکس‌هایی که هیچ والد معتبری (پروژه/عملیات/باکس/…) ندارند برای همیشه حذف می‌شوند. سایر داده‌ها دست‌نخورده می‌مانند."
+        confirmLabel="حذف عکس‌های یتیم"
+        destructive
+        loading={deletingOrphans}
+        onConfirm={() => void handleDeleteOrphans()}
+      />
+
       {/* پاک‌سازی کامل — مرحله ۱: هشدار */}
       <ConfirmDialog
         open={wipeStage === 1}
@@ -552,6 +802,49 @@ export default function BackupView() {
         loading={wiping}
         onConfirm={() => void handleWipe()}
       />
+    </div>
+  )
+}
+
+// ---------- ردیف شمارش سلامت ----------
+function HealthCountRow({ icon, label, count }: { icon: React.ReactNode; label: string; count: number }) {
+  const problem = count > 0
+  return (
+    <div
+      className={
+        problem
+          ? 'flex items-center gap-2 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-amber-900 dark:text-amber-200'
+          : 'flex items-center gap-2 rounded-lg border bg-muted/30 px-3 py-2 text-muted-foreground'
+      }
+    >
+      <span className={problem ? 'text-amber-600 dark:text-amber-300' : 'text-emerald-600 dark:text-emerald-400'} aria-hidden>
+        {problem ? icon : <CheckCircle2 className="size-4" />}
+      </span>
+      <span className="min-w-0 flex-1 truncate text-xs font-medium">{label}</span>
+      <span className="text-sm font-bold tabular-nums">{toFa(count)}</span>
+    </div>
+  )
+}
+
+// ---------- جزئیات یافته‌ها (فقط نمایش — حذف نمی‌شوند) ----------
+function HealthFindings({ health }: { health: DataHealthReport }) {
+  const items: Array<{ key: string; text: string }> = [
+    ...health.orphanRecords.slice(0, 5).map((r) => ({ key: `o-${r.table}-${r.id}`, text: `${tableFa(r.table)}: ${r.reason}` })),
+    ...health.meterAnomalies.slice(0, 5).map((m) => ({ key: `m-${m.id}`, text: m.message })),
+    ...health.unknownStatus.slice(0, 5).map((u) => ({
+      key: `u-${u.table}-${u.id}`,
+      text: `${tableFa(u.table)}: این رکورد کد وضعیت ناشناخته‌ای دارد و ممکن است در گزارش‌ها درست نمایش داده نشود`,
+    })),
+  ]
+  if (items.length === 0) return null
+  return (
+    <div className="max-h-48 space-y-1.5 overflow-y-auto rounded-lg border bg-muted/20 p-3" aria-label="جزئیات موارد مشکوک">
+      {items.map((it) => (
+        <p key={it.key} className="flex items-start gap-1.5 text-xs leading-5 text-muted-foreground">
+          <AlertTriangle className="mt-0.5 size-3 shrink-0 text-amber-600 dark:text-amber-300" aria-hidden />
+          <span>{it.text}</span>
+        </p>
+      ))}
     </div>
   )
 }

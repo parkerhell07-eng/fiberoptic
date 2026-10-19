@@ -171,6 +171,14 @@ function BoxFormDialog({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent dir="rtl" className="max-w-lg">
+        <form
+          id="route-box-form"
+          onSubmit={(e) => {
+            e.preventDefault()
+            handleSave()
+          }}
+          className="flex flex-col gap-4"
+        >
         <DialogHeader>
           <DialogTitle>{editing ? 'ویرایش باکس' : 'باکس جدید'}</DialogTitle>
           <DialogDescription>مشخصات باکس فیبر را وارد کنید؛ شماره باکس و مسیر الزامی هستند.</DialogDescription>
@@ -248,13 +256,14 @@ function BoxFormDialog({
           </Field>
         </div>
         <DialogFooter className="flex-row justify-start gap-2">
-          <Button onClick={handleSave} disabled={saving} className="min-h-11 flex-1">
+          <Button type="submit" form="route-box-form" disabled={saving} className="min-h-11 flex-1">
             {saving ? 'در حال ذخیره…' : 'ذخیره'}
           </Button>
-          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={saving} className="min-h-11 flex-1">
+          <Button variant="outline" type="button" onClick={() => onOpenChange(false)} disabled={saving} className="min-h-11 flex-1">
             انصراف
           </Button>
         </DialogFooter>
+        </form>
       </DialogContent>
     </Dialog>
   )
@@ -308,6 +317,7 @@ function BoxRowMenu({
 export default function RouteDetailView() {
   const params = useAppStore((s) => s.params)
   const navigate = useAppStore((s) => s.navigate)
+  const replace = useAppStore((s) => s.replace)
   const back = useAppStore((s) => s.back)
   const routeId = params.routeId
 
@@ -392,8 +402,9 @@ export default function RouteDetailView() {
       await deleteRouteCascade(route.id)
       toast.success(messages.deleted)
       setRouteDeleteOpen(false)
-      if (projectId) navigate('project', { projectId })
-      else navigate('projects')
+      // replace: Back نباید به مسیر حذف‌شده برگردد
+      if (projectId) replace('project', { projectId })
+      else replace('projects')
     } catch {
       toast.error(messages.error)
     } finally {
@@ -566,6 +577,14 @@ export default function RouteDetailView() {
       {/* ---------- دیالوگ‌ها ---------- */}
       <Dialog open={editOpen} onOpenChange={setEditOpen}>
         <DialogContent dir="rtl" className="max-w-lg">
+          <form
+            id="route-edit-form"
+            onSubmit={(e) => {
+              e.preventDefault()
+              handleEditSave()
+            }}
+            className="flex flex-col gap-4"
+          >
           <DialogHeader>
             <DialogTitle>ویرایش مسیر</DialogTitle>
             <DialogDescription>نام، کد و توضیحات مسیر را ویرایش کنید.</DialogDescription>
@@ -595,13 +614,14 @@ export default function RouteDetailView() {
             </Field>
           </div>
           <DialogFooter className="flex-row justify-start gap-2">
-            <Button onClick={handleEditSave} disabled={editSaving} className="min-h-11 flex-1">
+            <Button type="submit" form="route-edit-form" disabled={editSaving} className="min-h-11 flex-1">
               {editSaving ? 'در حال ذخیره…' : 'ذخیره'}
             </Button>
-            <Button variant="outline" onClick={() => setEditOpen(false)} disabled={editSaving} className="min-h-11 flex-1">
+            <Button variant="outline" type="button" onClick={() => setEditOpen(false)} disabled={editSaving} className="min-h-11 flex-1">
               انصراف
             </Button>
           </DialogFooter>
+          </form>
         </DialogContent>
       </Dialog>
 

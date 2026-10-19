@@ -5,6 +5,7 @@ import * as React from 'react'
 import { ChevronLeft, ChevronRight, Loader2, Trash2, ZoomIn, ZoomOut } from 'lucide-react'
 import { toast } from 'sonner'
 import { useLiveQuery } from 'dexie-react-hooks'
+import { VisuallyHidden } from '@radix-ui/react-visually-hidden'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import {
@@ -21,7 +22,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { ConfirmDialog } from './primitives'
 import { PhotoPickerButton } from './photo-picker'
-import { deletePhotos, db, updatePhotoMeta } from '@/lib/localdb'
+import { deletePhotos, db, getPhotoBlob, updatePhotoMeta } from '@/lib/localdb'
 import { formatBytes, formatJalaliDateTime } from '@/lib/persian'
 import { messages, photoCategoryLabels } from '@/lib/labels'
 import type { Photo as PhotoEntity, PhotoCategory, PhotoLink } from '@/lib/types'
@@ -31,17 +32,13 @@ export interface PhotoGalleryFilter extends PhotoLink {
 }
 
 function ThumbImage({ photoId, alt }: { photoId: string; alt: string }) {
-  const url = useLiveQuery(async () => {
+  // از بندانگشتی dataURL استفاده می‌کنیم — blob هرگز برای لیست به RAM نمی‌آید
+  const thumb = useLiveQuery(async () => {
     const p = await db.photos.get(photoId)
-    return p ? URL.createObjectURL(p.blob) : undefined
+    return p?.thumb || undefined
   }, [photoId])
-  React.useEffect(() => {
-    return () => {
-      if (url) URL.revokeObjectURL(url)
-    }
-  }, [url])
-  if (!url) return <div className="aspect-square w-full animate-pulse rounded-lg bg-muted" />
-  return <img src={url} alt={alt} className="aspect-square w-full rounded-lg object-cover" loading="lazy" />
+  if (!thumb) return <div className="aspect-square w-full animate-pulse rounded-lg bg-muted" />
+  return <img src={thumb} alt={alt} className="aspect-square w-full rounded-lg object-cover" loading="lazy" />
 }
 
 export function PhotoGallery({
@@ -79,6 +76,7 @@ export function PhotoGallery({
   const [previewId, setPreviewId] = React.useState<string | null>(null)
   const [deleteId, setDeleteId] = React.useState<string | null>(null)
   const [editId, setEditId] = React.useState<string | null>(null)
+  const [deleteBusy, setDeleteBusy] = React.useState(false)
 
   const previewPhoto = useLiveQuery(() => (previewId ? db.photos.get(previewId) : undefined), [previewId])
 
@@ -127,7 +125,14 @@ export function PhotoGallery({
       {/* پیش‌نمایش با بزرگ‌نمایی */}
       <Dialog open={!!previewId} onOpenChange={(o) => !o && setPreviewId(null)}>
         <DialogContent className="max-w-2xl p-3" dir="rtl">
-          {previewPhoto && <PreviewBody photo={previewPhoto} />}
+          {previewPhoto ? (
+            <PreviewBody photo={previewPhoto} />
+          ) : (
+            // عکس حذف‌شده/در دسترس نیست — عنوان دسترس‌پذیری حفظ شود و بلافاصله بسته شود
+            <VisuallyHidden>
+              <DialogTitle>پیش‌نمایش عکس</DialogTitle>
+            </VisuallyHidden>
+          )}
         </DialogContent>
       </Dialog>
 
@@ -141,11 +146,19 @@ export function PhotoGallery({
         description="این عکس به‌طور کامل حذف می‌شود و قابل بازگشت نیست."
         confirmLabel="حذف"
         destructive
+        loading={deleteBusy}
         onConfirm={async () => {
           if (!deleteId) return
-          await deletePhotos([deleteId])
-          setDeleteId(null)
-          toast.success(messages.photoDeleted)
+          setDeleteBusy(true)
+          try {
+            await deletePhotos([deleteId])
+            setDeleteId(null)
+            toast.success(messages.photoDeleted)
+          } catch {
+            toast.error(messages.error)
+          } finally {
+            setDeleteBusy(false)
+          }
         }}
       />
     </>
@@ -161,10 +174,19 @@ export function PhotoGallery({
     const [url, setUrl] = React.useState<string | null>(null)
     const [zoom, setZoom] = React.useState(1)
     React.useEffect(() => {
-      const u = URL.createObjectURL(photo.blob)
-      setUrl(u)
-      return () => URL.revokeObjectURL(u)
-    }, [photo])
+      let u: string | null = null
+      let cancelled = false
+      void (async () => {
+        const blob = await getPhotoBlob(photo.id)
+        if (!blob || cancelled) return
+        u = URL.createObjectURL(blob)
+        setUrl(u)
+      })()
+      return () => {
+        cancelled = true
+        if (u) URL.revokeObjectURL(u)
+      }
+    }, [photo.id])
     React.useEffect(() => {
       const onWheel = (e: WheelEvent) => {
         if (e.ctrlKey) {
@@ -210,7 +232,15 @@ export function PhotoGallery({
           <Button variant="outline" className="min-h-11 flex-1" onClick={() => setEditId(photo.id)}>
             ویرایش عنوان/توضیح
           </Button>
-          <Button variant="destructive" className="min-h-11 flex-1" onClick={() => setDeleteId(photo.id)}>
+          <Button
+            variant="destructive"
+            className="min-h-11 flex-1"
+            onClick={() => {
+              // پیش‌نمایش هم بسته می‌شود تا مودال خالی نماند
+              setPreviewId(null)
+              setDeleteId(photo.id)
+            }}
+          >
             <Trash2 className="size-4" />
             حذف
           </Button>
@@ -221,18 +251,31 @@ export function PhotoGallery({
 }
 
 function EditDialog({ photoId, onClose }: { photoId: string | null; onClose: () => void }) {
-  const photo = useLiveQuery(() => (photoId ? db.photos.get(photoId) : undefined), [photoId])
   const [title, setTitle] = React.useState('')
   const [description, setDescription] = React.useState('')
   const [category, setCategory] = React.useState<PhotoCategory>('project')
+  const [saving, setSaving] = React.useState(false)
+  // اسنپ‌شات عنوان اصلی در زمان بازشدن — برای فال‌بک عنوان خالی
+  const [originalTitle, setOriginalTitle] = React.useState('')
+  const open = !!photoId
 
   React.useEffect(() => {
-    if (photo) {
-      setTitle(photo.title)
-      setDescription(photo.description)
-      setCategory(photo.category)
+    if (!open || !photoId) return
+    let cancelled = false
+    void (async () => {
+      const p = await db.photos.get(photoId)
+      if (cancelled || !p) return
+      setTitle(p.title)
+      setDescription(p.description)
+      setCategory(p.category)
+      setOriginalTitle(p.title)
+    })()
+    return () => {
+      cancelled = true
     }
-  }, [photo])
+    // فقط در زمان بازشدن اسنپ‌شات می‌گیریم؛ نوشتار همزمان دیگری نباید تایپ کاربر را پاک کند
+     
+  }, [photoId])
 
   return (
     <Dialog open={!!photoId} onOpenChange={(o) => !o && onClose()}>
@@ -268,16 +311,28 @@ function EditDialog({ photoId, onClose }: { photoId: string | null; onClose: () 
         <DialogFooter className="flex-row justify-start gap-2">
           <Button
             className="min-h-11 flex-1"
+            disabled={saving}
             onClick={async () => {
               if (!photoId) return
-              await updatePhotoMeta(photoId, { title: title.trim() || photo?.title || 'بدون عنوان', description: description.trim(), category })
-              onClose()
-              toast.success(messages.updated)
+              setSaving(true)
+              try {
+                await updatePhotoMeta(photoId, {
+                  title: title.trim() || originalTitle || 'بدون عنوان',
+                  description: description.trim(),
+                  category,
+                })
+                onClose()
+                toast.success(messages.updated)
+              } catch {
+                toast.error(messages.error)
+              } finally {
+                setSaving(false)
+              }
             }}
           >
-            ذخیره
+            {saving ? 'در حال ذخیره…' : 'ذخیره'}
           </Button>
-          <Button variant="outline" className="min-h-11 flex-1" onClick={onClose}>
+          <Button variant="outline" className="min-h-11 flex-1" onClick={onClose} disabled={saving}>
             انصراف
           </Button>
         </DialogFooter>

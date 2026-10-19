@@ -62,3 +62,4 @@ server.log
 *.keystore
 *.jks
 *.idsig
+tool-results/

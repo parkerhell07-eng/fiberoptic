@@ -16,13 +16,45 @@ export function toEnDigits(input: string): string {
     .replace(/[٠-٩]/g, (d) => String('٠١٢٣٤٥٦٧٨٩'.indexOf(d)))
 }
 
-/** قالب‌بندی عدد با ارقام فارسی و جداکننده هزارگان */
+/** قالب‌بندی عدد با ارقام فارسی و جداکننده هزارگان (اعشار با «٫») */
 export function formatNum(n: number | undefined | null, fractionDigits = 0): string {
   if (n === undefined || n === null || Number.isNaN(n)) return '—'
   const fixed = Number(n.toFixed(fractionDigits))
   const [intPart, fracPart] = String(fixed).split('.')
   const withSep = intPart.replace(/\B(?=(\d{3})+(?!\d))/g, '٬')
-  return toFa(fracPart ? `${withSep}.${fracPart}` : withSep)
+  return toFa(fracPart ? `${withSep}٫${fracPart}` : withSep)
+}
+
+/**
+ * قالب‌بندی تطبیقی اعداد علمی/توان — هیچ مقدار ثبت‌شده‌ای فابسی نمیشود.
+ * تا ۶ رقم اعشار در صورت نیاز؛ صفرهای انتهایی حذف می‌شوند.
+ * برای مقادیر خیلی بزرگ/کوچک از نماد علمی استفاده می‌شود تا دقیقه حفظ شود.
+ */
+export function adaptiveNum(n: number | undefined | null): string {
+  if (n === undefined || n === null || Number.isNaN(n)) return '—'
+  if (n === 0) return toFa(0)
+  const abs = Math.abs(n)
+  let s: string
+  if (abs >= 1e15 || abs < 1e-9) {
+    s = n.toExponential(6).replace(/\.?0+e/, 'e')
+  } else {
+    s = String(Number(n.toFixed(8)))
+  }
+  const [intPart, fracPart] = s.split('.')
+  const withSep = intPart.replace(/\B(?=(\d{3})+(?!\d))/g, '٬')
+  return toFa(fracPart ? `${withSep}٫${fracPart}` : withSep)
+}
+
+/** نرمال‌سازی متن فارسی برای جست‌وجو: ی/ک عربی → فارسی، نیم‌فاصله → فاصله، ارقام → لاتین، حروف کوچک */
+export function normalizeFa(input: string): string {
+  return toEnDigits(String(input ?? ''))
+    .replace(/ي/g, 'ی')
+    .replace(/ك/g, 'ک')
+    .replace(/ۀ/g, 'ه')
+    .replace(/\u200c/g, ' ')
+    .replace(/[\u064b-\u0652\u0640]/g, '') // اعراب و کشیده
+    .toLowerCase()
+    .trim()
 }
 
 /** قالب‌بندی متراژ */
@@ -159,6 +191,20 @@ export function computeConsumed(
 ): { value?: number; source: 'auto' | 'user' | 'none'; valid: boolean; message?: string } {
   if (user !== undefined && user !== null && Number.isFinite(user)) {
     if (user < 0) return { source: 'none', valid: false, message: 'متراژ مصرفی منفی پذیرفته نیست' }
+    // مقایسه با متراژ اولیه — مصرف بیشتر از اولیه غیرممکن است و آمار را خراب می‌کند
+    if (
+      initial !== undefined &&
+      initial !== null &&
+      Number.isFinite(initial) &&
+      initial >= 0 &&
+      user > initial
+    ) {
+      return {
+        source: 'none',
+        valid: false,
+        message: 'متراژ مصرفی نمی‌تواند بیشتر از متراژ اولیه باشد',
+      }
+    }
     return { value: user, source: 'user', valid: true }
   }
   if (initial !== undefined && initial !== null && Number.isFinite(initial) && initial >= 0) {
@@ -181,10 +227,27 @@ export function validateMeterage(value: number | undefined, label = 'متراژ'
   return null
 }
 
-/** پارس عدد از ورودی (با پشتیبانی ارقام فارسی) */
+/** پارس عدد از ورودی (با پشتیبانی ارقام فارسی و ممیز «٫») */
 export function parseNumberInput(input: string): number | undefined {
-  const en = toEnDigits(String(input)).replace(/[٬,\s]/g, '')
-  if (en === '' || en === '-') return undefined
+  const en = toEnDigits(String(input))
+    .replace(/٫/g, '.')
+    .replace(/[٬,\s]/g, '')
+  if (en === '' || en === '-' || en === '.') return undefined
   const n = Number(en)
   return Number.isFinite(n) ? n : undefined
+}
+
+/** شروع و پایان یک ماه شمسی بر حسب epoch ms (برای آمار ماهانه) */
+export function jalaliMonthWindow(jy: number, jm: number): { start: number; end: number } {
+  const gStart = toGregorian(jy, jm, 1)
+  const start = new Date(gStart.gy, gStart.gm - 1, gStart.gd, 0, 0, 0, 0).getTime()
+  let ny = jy
+  let nm = jm + 1
+  if (nm > 12) {
+    nm = 1
+    ny++
+  }
+  const gEnd = toGregorian(ny, nm, 1)
+  const end = new Date(gEnd.gy, gEnd.gm - 1, gEnd.gd, 0, 0, 0, 0).getTime()
+  return { start, end }
 }

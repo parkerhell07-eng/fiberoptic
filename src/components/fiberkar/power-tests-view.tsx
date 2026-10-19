@@ -64,6 +64,7 @@ import {
   NumberField,
   PageHeader,
 } from './primitives'
+import { CsvExportButton } from './csv-export-button'
 
 const NONE = 'none'
 
@@ -194,6 +195,8 @@ export default function PowerTestsView() {
   const [form, setForm] = React.useState<PowerTestForm>(() => emptyForm(params.projectId, params.routeId, params.boxId))
   const [errors, setErrors] = React.useState<PowerTestErrors>({})
   const [busy, setBusy] = React.useState(false)
+  // بنر موفقیت در حالت ایجاد (دیالوگ باز می‌ماند تا عکس با شناسه واقعی پیوست شود)
+  const [created, setCreated] = React.useState(false)
 
   // ---------- حذف ----------
   const [deleteTarget, setDeleteTarget] = React.useState<PowerTest | null>(null)
@@ -234,10 +237,18 @@ export default function PowerTestsView() {
     form.value !== undefined && Number.isFinite(form.value) ? convertedPower(form.value, form.unit) : null
 
   // ---------- کنترل فرم ----------
+  // پیش‌فرض ایجاد: از فیلترهای فعال کاربر، با بازگشت به پارامترهای ناوبری
   function openCreate() {
-    setForm(emptyForm(params.projectId, params.routeId, params.boxId))
+    setForm(
+      emptyForm(
+        filterProject ?? params.projectId,
+        filterRoute ?? params.routeId,
+        filterBox ?? params.boxId
+      )
+    )
     setEditingId(null)
     setErrors({})
+    setCreated(false)
     setDialogOpen(true)
   }
 
@@ -246,24 +257,28 @@ export default function PowerTestsView() {
       projectId: pt.projectId,
       routeId: pt.routeId,
       boxId: pt.boxId,
-      location: pt.location,
+      location: pt.location ?? '',
       date: pt.date,
       value: pt.value,
       unit: pt.unit,
       wavelengthNm: pt.wavelengthNm,
-      deviceModel: pt.deviceModel,
+      deviceModel: pt.deviceModel ?? '',
       assigneeProfileId: pt.assigneeProfileId,
-      assigneeName: pt.assigneeName,
-      description: pt.description,
+      assigneeName: pt.assigneeName ?? '',
+      description: pt.description ?? '',
     })
     setEditingId(pt.id)
     setErrors({})
+    setCreated(false)
     setDialogOpen(true)
   }
 
   function handleDialogChange(open: boolean) {
     setDialogOpen(open)
-    if (!open) setErrors({})
+    if (!open) {
+      setErrors({})
+      setCreated(false)
+    }
   }
 
   function setFormProject(id: string | undefined) {
@@ -341,9 +356,10 @@ export default function PowerTestsView() {
         toast.success(messages.updated)
         setDialogOpen(false)
       } else {
-        const created = await createPowerTest(input)
-        setEditingId(created.id)
+        const rec = await createPowerTest(input)
+        setEditingId(rec.id)
         setErrors({})
+        setCreated(true)
         toast.success(messages.saved)
       }
     } catch {
@@ -367,6 +383,21 @@ export default function PowerTestsView() {
     }
   }
 
+  // ---------- لینک عمیق: باز شدن خودکار ویرایش برای powerTestId (فقط یک بار در هر نشانی) ----------
+  const deepLinkConsumedRef = React.useRef(false)
+  React.useEffect(() => {
+    deepLinkConsumedRef.current = false
+  }, [params.powerTestId])
+  React.useEffect(() => {
+    if (deepLinkConsumedRef.current) return
+    const id = params.powerTestId
+    if (!id || !powerTests) return
+    deepLinkConsumedRef.current = true
+    const rec = powerTests.find((x) => x.id === id)
+    if (rec) openEdit(rec)
+     
+  }, [powerTests, params.powerTestId])
+
   // ================= رندر =================
   return (
     <>
@@ -375,10 +406,13 @@ export default function PowerTestsView() {
         subtitle={powerTests ? `${toFa(powerTests.length)} مورد` : undefined}
         onBack={back}
         actions={
-          <Button onClick={openCreate} className="min-h-11">
-            <Plus className="size-4" />
-            ثبت جدید
-          </Button>
+          <div className="flex items-center gap-2">
+            <CsvExportButton kind="power-tests" projectId={filterProject} className="min-h-11" />
+            <Button onClick={openCreate} className="min-h-11">
+              <Plus className="size-4" />
+              ثبت جدید
+            </Button>
+          </div>
         }
       />
 
@@ -493,12 +527,28 @@ export default function PowerTestsView() {
       {/* دیالوگ ثبت/ویرایش */}
       <Dialog open={dialogOpen} onOpenChange={handleDialogChange}>
         <DialogContent dir="rtl" className="max-h-[85vh] max-w-lg overflow-y-auto">
+          <form
+            onSubmit={(e) => {
+              e.preventDefault()
+              handleSave()
+            }}
+            className="flex flex-col gap-4"
+          >
           <DialogHeader>
             <DialogTitle>{editingId ? 'ویرایش تست توان' : 'ثبت تست توان جدید'}</DialogTitle>
             <DialogDescription>
               {editingId ? 'اطلاعات تست را ویرایش و ذخیره کنید.' : 'نتیجه اندازه‌گیری را دقیقاً مطابق دستگاه ثبت کنید.'}
             </DialogDescription>
           </DialogHeader>
+
+          {created && (
+            <div
+              role="status"
+              className="flex items-center gap-2 rounded-lg border border-primary/30 bg-primary/10 px-3 py-2.5 text-sm font-medium text-primary"
+            >
+              ذخیره شد ✓ — اکنون می‌توانید برای این مورد عکس ثبت کنید یا مشخصات را تکمیل کنید
+            </div>
+          )}
 
           <div className="flex flex-col gap-4">
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
@@ -685,14 +735,15 @@ export default function PowerTestsView() {
           </div>
 
           <DialogFooter className="flex-row justify-start gap-2">
-            <Button onClick={handleSave} disabled={busy} className="min-h-11 flex-1">
+            <Button type="submit" disabled={busy} className="min-h-11 flex-1">
               {busy && <Loader2 className="size-4 animate-spin" />}
               {editingId ? 'ذخیره تغییرات' : 'ثبت و ذخیره'}
             </Button>
-            <Button variant="outline" onClick={() => setDialogOpen(false)} disabled={busy} className="min-h-11 flex-1">
+            <Button variant="outline" type="button" onClick={() => setDialogOpen(false)} disabled={busy} className="min-h-11 flex-1">
               بستن
             </Button>
           </DialogFooter>
+          </form>
         </DialogContent>
       </Dialog>
 
@@ -743,7 +794,7 @@ function PowerTestCard({
       }
       meta={
         <>
-          {pt.deviceModel.trim() && (
+          {(pt.deviceModel ?? '').trim() && (
             <span className="flex items-center gap-1">
               <Gauge className="size-3.5 shrink-0" />
               {pt.deviceModel}

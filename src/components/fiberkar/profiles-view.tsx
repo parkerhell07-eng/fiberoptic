@@ -73,25 +73,29 @@ function defaultProfileValues(): ProfileFormValues {
 }
 
 function profileValuesFromRecord(p: Profile): ProfileFormValues {
+  // خوانش دفاعی — رکورد بازگردی‌شده ناقص نباید فرم را بشکند
+  const roles: ProfileRole[] = Array.isArray(p.roles) ? p.roles : []
+  const roleData = p.roleData ?? {}
   return {
-    firstName: p.firstName,
-    lastName: p.lastName,
-    phone: p.phone,
-    company: p.company,
-    city: p.city,
-    description: p.description,
-    roles: [...p.roles],
-    customRoleLabel: p.customRoleLabel,
-    contractorArea: p.roleData.contractorArea ?? '',
-    fusionDevice: p.roleData.fusionDevice ?? '',
-    testDevice: p.roleData.testDevice ?? '',
-    dropCableType: p.roleData.dropCableType ?? '',
-    dropMethod: p.roleData.dropMethod ?? '',
+    firstName: p.firstName ?? '',
+    lastName: p.lastName ?? '',
+    phone: p.phone ?? '',
+    company: p.company ?? '',
+    city: p.city ?? '',
+    description: p.description ?? '',
+    roles: [...roles],
+    customRoleLabel: p.customRoleLabel ?? '',
+    contractorArea: roleData.contractorArea ?? '',
+    fusionDevice: roleData.fusionDevice ?? '',
+    testDevice: roleData.testDevice ?? '',
+    dropCableType: roleData.dropCableType ?? '',
+    dropMethod: roleData.dropMethod ?? '',
   }
 }
 
 function roleBadgeLabel(p: Profile, role: ProfileRole): string {
-  return role === 'custom' ? p.customRoleLabel || profileRoleLabels.custom : profileRoleLabels[role]
+  const custom = p.customRoleLabel ?? ''
+  return role === 'custom' ? custom || profileRoleLabels.custom : profileRoleLabels[role] ?? 'نامشخص'
 }
 
 // ================= نمای اصلی پروفایل‌ها =================
@@ -178,55 +182,58 @@ export default function ProfilesView() {
         />
       ) : (
         <div className="flex flex-col gap-4">
-          {sorted.map((p) => (
-            <ItemCard
-              key={p.id}
-              title={`${p.firstName} ${p.lastName}`.trim()}
-              subtitle={p.description || undefined}
-              badges={
-                p.roles.length > 0 ? (
+          {sorted.map((p) => {
+            const roles: ProfileRole[] = Array.isArray(p.roles) ? p.roles : []
+            return (
+              <ItemCard
+                key={p.id}
+                title={`${p.firstName} ${p.lastName}`.trim()}
+                subtitle={p.description || undefined}
+                badges={
+                  roles.length > 0 ? (
+                    <>
+                      {roles.map((r) => (
+                        <StatusBadge
+                          key={r}
+                          label={roleBadgeLabel(p, r)}
+                          variant={r === 'custom' ? 'outline' : 'secondary'}
+                        />
+                      ))}
+                    </>
+                  ) : (
+                    <span className="text-xs text-muted-foreground">بدون نقش</span>
+                  )
+                }
+                meta={
                   <>
-                    {p.roles.map((r) => (
-                      <StatusBadge
-                        key={r}
-                        label={roleBadgeLabel(p, r)}
-                        variant={r === 'custom' ? 'outline' : 'secondary'}
-                      />
-                    ))}
+                    {p.company && <span>{p.company}</span>}
+                    {p.city && <span>{p.city}</span>}
+                    {p.phone && <span>تلفن: {toFa(p.phone)}</span>}
                   </>
-                ) : (
-                  <span className="text-xs text-muted-foreground">بدون نقش</span>
-                )
-              }
-              meta={
-                <>
-                  {p.company && <span>{p.company}</span>}
-                  {p.city && <span>{p.city}</span>}
-                  {p.phone && <span>تلفن: {toFa(p.phone)}</span>}
-                </>
-              }
-              onClick={() => openEdit(p)}
-              trailing={
-                <DropdownMenu dir="rtl">
-                  <DropdownMenuTrigger asChild onClick={(e) => e.stopPropagation()}>
-                    <Button variant="ghost" size="icon" className="size-11" aria-label={`گزینه‌های ${p.firstName} ${p.lastName}`}>
-                      <MoreVertical className="size-4" />
-                    </Button>
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent align="end" onClick={(e) => e.stopPropagation()}>
-                    <DropdownMenuItem onClick={() => openEdit(p)}>
-                      <Pencil className="size-4" />
-                      ویرایش
-                    </DropdownMenuItem>
-                    <DropdownMenuItem variant="destructive" onClick={() => setDeleteId(p.id)}>
-                      <Trash2 className="size-4" />
-                      حذف
-                    </DropdownMenuItem>
-                  </DropdownMenuContent>
-                </DropdownMenu>
-              }
-            />
-          ))}
+                }
+                onClick={() => openEdit(p)}
+                trailing={
+                  <DropdownMenu dir="rtl">
+                    <DropdownMenuTrigger asChild onClick={(e) => e.stopPropagation()}>
+                      <Button variant="ghost" size="icon" className="size-11" aria-label={`گزینه‌های ${p.firstName} ${p.lastName}`}>
+                        <MoreVertical className="size-4" />
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end" onClick={(e) => e.stopPropagation()}>
+                      <DropdownMenuItem onClick={() => openEdit(p)}>
+                        <Pencil className="size-4" />
+                        ویرایش
+                      </DropdownMenuItem>
+                      <DropdownMenuItem variant="destructive" onClick={() => setDeleteId(p.id)}>
+                        <Trash2 className="size-4" />
+                        حذف
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                }
+              />
+            )
+          })}
         </div>
       )}
 
@@ -238,8 +245,8 @@ export default function ProfilesView() {
           setFormOpen(false)
           setEditing(null)
         }}
-        onCreated={(rec) => {
-          setEditing(rec)
+        onCreated={() => {
+          // پروفایل هیچ عکسی ندارد → دیالوگ بلافاصله بسته می‌شود (هم‌راستا با سایر ماژول‌ها)
           toast.success(messages.saved)
         }}
       />
@@ -342,6 +349,7 @@ function ProfileFormDialog({
       } else {
         const rec = await createProfile(payload)
         onCreated(rec)
+        onClose()
       }
     } catch {
       toast.error(messages.error)
@@ -365,7 +373,14 @@ function ProfileFormDialog({
           </DialogDescription>
         </DialogHeader>
 
-        <div className="flex flex-col gap-3 overflow-y-auto p-4">
+        <form
+          id="profile-form"
+          onSubmit={(e) => {
+            e.preventDefault()
+            handleSave()
+          }}
+          className="flex flex-col gap-3 overflow-y-auto p-4"
+        >
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <Field label="نام" required error={errors.firstName}>
               <Input
@@ -520,13 +535,13 @@ function ProfileFormDialog({
               placeholder="اختیاری"
             />
           </Field>
-        </div>
+        </form>
 
         <DialogFooter className="flex-row justify-start gap-2 border-t p-4">
-          <Button onClick={handleSave} disabled={saving} className="min-h-11 flex-1">
+          <Button type="submit" form="profile-form" disabled={saving} className="min-h-11 flex-1">
             {saving ? 'در حال ذخیره…' : 'ذخیره'}
           </Button>
-          <Button variant="outline" onClick={onClose} disabled={saving} className="min-h-11 flex-1">
+          <Button variant="outline" type="button" onClick={onClose} disabled={saving} className="min-h-11 flex-1">
             انصراف
           </Button>
         </DialogFooter>

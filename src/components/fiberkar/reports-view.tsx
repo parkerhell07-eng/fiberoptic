@@ -20,12 +20,14 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { PhotoGallery } from './photo-gallery'
 import { EmptyState, Field, PageHeader, SegmentedTabs } from './primitives'
 import { messages } from '@/lib/labels'
-import { toFa } from '@/lib/persian'
+import { formatBytes, toFa } from '@/lib/persian'
 import { db } from '@/lib/localdb'
+import { isNativeApp, sanitizeFileName } from '@/lib/native-bridge'
 import {
   defaultSections,
   generateProjectReport,
   shareOrDownloadBlob,
+  type ReportProgress,
   type ReportSections,
 } from '@/lib/pdf'
 import { useAppStore } from '@/store/app-store'
@@ -50,8 +52,10 @@ const sectionItems: Array<{ key: keyof ReportSections; label: string }> = [
 
 interface ReportResult {
   blob: Blob
-  url: string
+  /** فقط وب — در WebView بومی اندروید blob URL در iframe خالی رندر می‌شود (M10) */
+  url?: string
   name: string
+  pages: number
 }
 
 export default function ReportsView() {
@@ -64,8 +68,11 @@ export default function ReportsView() {
   const [photoIds, setPhotoIds] = React.useState<string[]>([])
   const [photosOpen, setPhotosOpen] = React.useState(false)
   const [busy, setBusy] = React.useState(false)
-  const [progress, setProgress] = React.useState<{ done: number; total: number } | null>(null)
+  const [progress, setProgress] = React.useState<ReportProgress | null>(null)
   const [result, setResult] = React.useState<ReportResult | null>(null)
+
+  // در اپ اندرویدی iframe پیش‌نمایش PDF رندر نمی‌شود (WebView) — به‌جایش اطلاعات فایل + اشتراک (M10)
+  const native = React.useMemo(() => isNativeApp(), [])
 
   const projects = useLiveQuery(async () => {
     const list = await db.projects.filter((p) => !p.archived).toArray()
@@ -87,10 +94,10 @@ export default function ReportsView() {
     setPhotoIds([])
   }, [projectId])
 
-  // آزادسازی object URL پس از بستن پیش‌نمایش یا خروج از صفحه
+  // آزادسازی object URL پس از بستن پیش‌نمایش یا خروج از صفحه (فقط مسیر وب)
   React.useEffect(() => {
     return () => {
-      if (result) URL.revokeObjectURL(result.url)
+      if (result?.url) URL.revokeObjectURL(result.url)
     }
   }, [result])
 
@@ -108,15 +115,20 @@ export default function ReportsView() {
     setBusy(true)
     setProgress(null)
     try {
-      const blob = await generateProjectReport({
+      const { blob, pages } = await generateProjectReport({
         projectId,
         mode,
         sections,
         photoIds: photoIds.length > 0 ? photoIds : undefined,
-        onProgress: (done, total) => setProgress({ done, total }),
+        onProgress: (p) => setProgress(p),
       })
-      const url = URL.createObjectURL(blob)
-      setResult({ blob, url, name: `گزارش-${project?.name ?? 'پروژه'}.pdf` })
+      setResult({
+        blob,
+        // در حالت بومی object URL نمی‌سازیم چون پیش‌نمایش iframe نداریم (M10)
+        url: native ? undefined : URL.createObjectURL(blob),
+        name: sanitizeFileName(`گزارش-${project?.name ?? 'پروژه'}`, '.pdf'), // M6
+        pages,
+      })
       toast.success('گزارش با موفقیت تولید شد')
     } catch (e) {
       const detail = (e as Error)?.message ?? messages.error
@@ -131,9 +143,16 @@ export default function ReportsView() {
     if (!result) return
     try {
       const how = await shareOrDownloadBlob(result.blob, result.name)
-      toast.success(how === 'shared' ? 'گزارش برای اشتراک‌گذاری ارسال شد' : 'گزارش دانلود شد')
-    } catch {
-      toast.error(messages.error)
+      // نتیجه واقعی — نه پیام دروغین (H5)
+      toast.success(
+        how === 'shared'
+          ? 'گزارش برای اشتراک‌گذاری ارسال شد'
+          : how === 'saved'
+            ? 'گزارش در پوشه اسناد ذخیره شد'
+            : 'گزارش دانلود شد'
+      )
+    } catch (e) {
+      toast.error((e as Error)?.message || messages.error)
     }
   }
 
@@ -290,11 +309,19 @@ export default function ReportsView() {
           {busy && progress && (
             <div className="flex flex-col gap-1.5" role="status">
               <Progress
-                value={progress.total > 0 ? Math.round((progress.done / progress.total) * 100) : 0}
+                value={
+                  progress.phase === 'measure' || progress.total === 0
+                    ? undefined
+                    : Math.round((progress.done / progress.total) * 100)
+                }
                 aria-label="پیشرفت تولید گزارش"
               />
               <p className="text-center text-xs text-muted-foreground">
-                صفحه {toFa(progress.done)} از {toFa(progress.total)}
+                {progress.phase === 'photos' &&
+                  `پردازش عکس ${toFa(progress.done)} از ${toFa(progress.total)}`}
+                {progress.phase === 'measure' && 'صفحه‌بندی محتوا…'}
+                {progress.phase === 'pages' &&
+                  `صفحه ${toFa(progress.done)} از ${toFa(progress.total)}`}
               </p>
             </div>
           )}
@@ -325,11 +352,38 @@ export default function ReportsView() {
           </DialogHeader>
           {result && (
             <>
-              <iframe
-                src={result.url}
-                className="h-[70vh] w-full rounded-lg border"
-                title="پیش‌نمایش گزارش PDF"
-              />
+              {!native && result.url ? (
+                <>
+                  <p className="text-xs text-muted-foreground">
+                    {result.name} — {formatBytes(result.blob.size)} — {toFa(result.pages)} صفحه
+                  </p>
+                  <iframe
+                    src={result.url}
+                    className="h-[70vh] w-full rounded-lg border"
+                    title="پیش‌نمایش گزارش PDF"
+                  />
+                </>
+              ) : (
+                // WebView بومی اندروید: blob URL در iframe خالی رندر می‌شود → اطلاعات فایل به‌جای پیش‌نمایش (M10)
+                <div className="flex flex-col gap-2.5 rounded-lg border bg-muted/30 p-4">
+                  <div className="flex items-center justify-between gap-3 text-sm">
+                    <span className="shrink-0 text-muted-foreground">نام فایل</span>
+                    <span className="break-all font-medium">{result.name}</span>
+                  </div>
+                  <div className="flex items-center justify-between gap-3 text-sm">
+                    <span className="text-muted-foreground">حجم فایل</span>
+                    <span className="font-medium">{formatBytes(result.blob.size)}</span>
+                  </div>
+                  <div className="flex items-center justify-between gap-3 text-sm">
+                    <span className="text-muted-foreground">تعداد صفحات</span>
+                    <span className="font-medium">{toFa(result.pages)}</span>
+                  </div>
+                  <p className="text-xs leading-6 text-muted-foreground">
+                    در نسخه اندرویدی، پیش‌نمایش داخلی PDF پشتیبانی نمی‌شود؛ با دکمه زیر گزارش را برای دیگران
+                    بفرستید یا در دستگاه ذخیره کنید.
+                  </p>
+                </div>
+              )}
               <DialogFooter className="flex-row justify-start gap-2">
                 <Button className="min-h-11 flex-1" onClick={handleShare}>
                   <FileDown className="size-4" aria-hidden />

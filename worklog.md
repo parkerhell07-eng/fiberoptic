@@ -302,3 +302,68 @@ Work Log:
 Stage Summary:
 - Live: main pushed with v1.0.1 fix; CI ACTIVE (workflow in .github/workflows); Release https://github.com/parkerhell07-eng/fiberoptic/releases/tag/v1.0.1 with signed APKs.
 - Device confirmation pending: user installs v1.0.1 over v1.0 (same key, in-place update). If any form issue persists, next hardening step = uncontrolled inputs + FormData read at save.
+
+---
+Task ID: 10-d
+Agent: pdf-pipeline agent (Z.ai Code)
+Task: Full rework of PDF export pipeline (src/lib/pdf.ts + reports-view fixes) — no clipping, no OOM, honest values/toasts, real ordering and fields.
+
+Work Log:
+- Read worklog + core-layer changes (getPhotoBlob/photoBlobs, adaptiveNum, blobToReportDataUrl, nativeShareOrSaveFile/sanitizeFileName) and built on them; photos loop kept getPhotoBlob + per-photo try/catch.
+- C1 (clipped tables): restructured every report table into per-row blocks — `tableHeaderHtml`/`tableRowHtml` (pdf.ts:159,171) + `dataTableBlocks` (pdf.ts:273) emit header row and each data row as independent blocks tagged with tableId; `paginate()` (pdf.ts:662+) re-renders the table's header at top of every continuation page (pdf.ts:688), fixed % widths + `table-layout:fixed` keep columns aligned across separate row-tables, `margin-top:-1px` merges borders so rows read as one continuous table (top border on first visible row, bottom on last, via full cell borders); titles/headers got `keepWithNext` orphan control (KEEP_MIN=96).
+- C2 (OOM): capture loop now mounts ONE page at a time — `holder.el.innerHTML = pageShell(...)` per iteration (pdf.ts:834), awaits `img.decode()` for the page's photos (pdf.ts:842), frees canvas (width=0) after each capture; never more than one page in DOM.
+- H2: photos sorted by createdAt asc BEFORE summary slice(0,8) (pdf.ts:781) — «۸ عکس اول» is now literally true.
+- H3: real ordering — routes by createdAt asc; boxes grouped by route order then natural numeric `localeCompare(…,{numeric:true})` (pdf.ts:756-759); operations/fusions/powerTests/dropCables by createdAt asc; route/box names resolved via Maps (`routeNameById`/`boxLabelById`, pdf.ts:752-761) — zero .find() per row.
+- H4: `document.fonts.ready` awaited BEFORE measuring (pdf.ts:803); each block measured inside a `display:flow-root` wrapper so margins are included (pdf.ts:812).
+- H5: native branch in shareOrDownloadBlob never falls through to web `<a download>` — 'shared'/'saved' returned, 'failed' throws Persian error (pdf.ts:886-891); reports-view toasts «ارسال شد»/«در پوشه اسناد ذخیره شد»/«دانلود شد» per real result.
+- H6: mW power-test values use adaptiveNum (pdf.ts:498) — 0.001234 mW is never faked to ۰٫۰۰; dBm keeps 2 decimals.
+- M1: progress now has real phases {photos|measure|pages} (ReportProgress) — «پردازش عکس X از Y» during photo blocks, «صفحه‌بندی محتوا…» during measuring, «صفحه X از Y» during capture; confusing initial (0, blocks.length) removed.
+- M3: summary routes table omits the empty '—' column (2 cols; full keeps 3).
+- M4: «عکس‌ها» stat uses allPhotos.length (pdf.ts:347); images section title shows «(درج‌شده: N)» (pdf.ts:610).
+- M5: full mode adds real fields — Box.capacity (pdf.ts:389); Operation.assigneeRole (pdf.ts:428); DropCable brand/model/coreCount/executorName + باکس مبدأ via sourceBoxId as a second «جزئیات بیشتر دراپ‌کابل» table (pdf.ts:576-590); Fusion/PowerTest gain «مسیر / باکس» context + description (pdf.ts:466,472,508,514).
+- M6: `sanitizeFileName(گزارش-${name}, '.pdf')` in reports-view (reports-view.tsx:129) and defensively inside shareOrDownloadBlob (pdf.ts:884).
+- M10: native mode skips blob-URL iframe (blank in Capacitor WebView) and shows file info (name/size/pages) + share button instead (reports-view.tsx:355-385); web keeps iframe + compact info line.
+- LOW: jsPDF setProperties (title/author فیبرکار) + setLanguage('fa') (pdf.ts:858-865); esc() escapes single quotes (pdf.ts:109); longParagraphs splits on word boundaries; honest note block when selected photoIds no longer exist (missingSelected).
+- DESIGN GUARD kept: all report DOM nodes inline HEX only (C/base pattern, warning comment at pdf.ts:6-10), A4 794×1123 @96dpi, exports generateProjectReport + shareOrDownloadBlob preserved (generateProjectReport now returns {blob, pages}).
+- Verification (agent-browser, isolated session pdf10d — default session of other agents untouched): project + route via UI; full report baseline = ۲ صفحه; seeded 42 boxes directly into the app's real IndexedDB; full report = ۴ صفحه (1.2MB) — page count scaling proves rows paginate instead of clipping (old code would stay at ~2 pages with rows silently cut); extracted the actual PDF from the preview blob and verified: %PDF-1.3, /Count 4, and pixel-analysis of rendered pages found the emerald repeated header band at top of pages 2-4 (y=69-94) and ≥52 full-width row borders (42 rows) — no row lost; column counts verified in pixels: full routes=3 / boxes=7, summary routes=2 / boxes=5 (M3); summary = ۳ صفحه (799KB); web share → toast «گزارش دانلود شد» + file saved to /home/z/Downloads/گزارش-پروژه آزمون PDF.pdf (Persian sanitized filename, md5 == preview blob, 3 pages); zero console errors (only pre-existing Radix aria-describedby warning).
+- Cleanup: test project deleted via UI (cascade) — IndexedDB empty (projects/routes/boxes/photos/photoBlobs all ۰); session closed. No test hacks committed.
+- Gates: bunx tsc --noEmit → 0 errors; bun run lint → 0 errors 0 warnings; dev server 200, dev.log clean.
+
+Stage Summary:
+- PDF pipeline is now safe for official long reports: per-row pagination with repeated headers (no data loss), single-page DOM capture (no Android OOM), real sorted data with Map lookups, honest mW values and honest share results, richer full-mode fields, real progress phases, native preview fallback with file info.
+- Honest limits: Android share/save path verified by code + return-contract (no device in sandbox); the "repeated header" was verified programmatically (pixel band analysis of rendered PDF pages), not by human eyes.
+
+---
+Task ID: 10
+Agent: orchestrator (Z.ai Code) + agents 10-d/10-e/10-f
+Task: Full app audit + bugfix sweep + PDF rewrite + advanced features (v1.1.0) — user request «بررسی مجدد کل برنامه، رفع همه باگ‌ها، بازنویسی PDF، امکانات پیشرفته».
+
+Work Log (core layer by orchestrator):
+- localdb v2: photoBlobs split table (+transparent migration), projects.pinned index, updateStrict throws on missing record (no ghost saves), photo re-link on parent edits, cascades sweep 7 link keys + blobs, dashboard stats: Jalali month, cursor-based meter sum, operationsByMonth (6 Jalali months), projectStatusCounts, projectsTotalAll, setProjectPinned.
+- app-store rewrite: browser history is the single source of truth — back()=history.back(), boot synthetic dashboard entry under deep links, replace() after deletes, hashchange listener added (bookmarks/external links now sync), category validation.
+- backup.ts rewrite: atomic restore (one Dexie tx — mid-failure rolls back cleanly), bounded-concurrency photo conversion, single stringify + checksum-in-place, verifyAndParse single parse, legacy+new backup formats, progress callbacks, saveBlobToDisk native fallback chain (Documents → Share → error, never silent).
+- native-bridge: sanitizeFileName, honest 'failed' result, cache temp cleanup.
+- persian: normalizeFa, adaptiveNum, «٫» decimals, computeConsumed user>initial invalid, jalaliMonthWindow.
+- images: white background fill, EXIF orientation, skip-thumb path.
+- primitives: NumberField full rewrite (no mid-typing wipes, single dot, «٫», allowNegative opt-in), destructive ConfirmDialog focuses Cancel (Enter-safe), StatusBadge «نامشخص» fallback, JalaliDatePicker minIso/maxIso.
+
+Work Log (agent 10-d, PDF):
+- Per-row pagination with repeated table headers (42-row seeded test → 4 pages, header band pixel-verified on pages 2–4, ≥52 row borders → zero rows clipped).
+- Single-page DOM capture (no OOM), fonts awaited before flow-root measurement, real sorting + Map lookups, honest mW via adaptiveNum, honest native share results, summary '—' column fix, photo stat = project total, full-mode extra fields (capacity/brand/model/core/executor/context), progress phases, native preview info instead of blank iframe, jsPDF metadata, filename sanitize.
+
+Work Log (agent 10-e, views):
+- photo-picker per-file try/catch + failure toast; create-mode success banner in operations/fusion/power-tests/drop-cables («ذخیره شد ✓…»); profiles close-on-create; executor NONE translation + stale snapshot clear; allowNegative=false on meterage; defensive ?? reads (fusion/power-tests/drop-cables/profiles); gallery busy+try/catch+preview-close-on-delete+snapshot edit dialog; photos-view params sync + photoId deep-link preview; deep-link auto-open edit (operationId/fusionId/powerTestId/dropCableId); Enter-to-submit forms; post-delete replace() navigation; filters-based prefill; RowMenu stopPropagation.
+
+Work Log (agent 10-f, features):
+- Dashboard: 6-month operations bar chart (SVG, aria), project status distribution, hasNoData on totalAll, dual stat cards, backup-age reminder banner, pinned-first recent projects.
+- Projects: pin/unpin menu + badge + pinned-first sort, normalizeFa+case-insensitive search.
+- Search: normalizeFa both sides, multi-token AND, 30-cap + «نمایش بیشتر», photos group (meta+thumb), label fallbacks, date range min/max clamp.
+- backup-view: storage usage bar, progress phases for backup/restore, verifyAndParse single parse, input reset, health-check section (data-health.ts: orphan photos/records, meter anomalies, unknown statuses + one-tap orphan photo cleanup).
+- csv.ts + CsvExportButton (Persian headers, BOM, native-aware toasts); wired into operations/power-tests/drop-cables toolbars by orchestrator.
+- sw.js: cache v2, res.ok guard, SKIP_WAITING listener; page.tsx: update toast wiring, resolvedTheme toggle, more-menu active state, «/» shortcut, footer v1.1.
+
+E2E verification (agent-browser, real flows):
+- Dashboard renders with charts + reminder; pin toggle persists; operations create→banner→edit; CSV export downloads (7KB Persian file, BOM verified); profiles create→closes→toast; photo upload via DataTransfer→thumb renders→preview blob→delete-from-preview closes (M6); backup create with progress + checksum verified externally (python recompute = match); restore-mode dialog; danger-zone two-stage wipe → all tables 0 (incl photoBlobs); «/» shortcut; theme toggle (resolvedTheme); mobile Galaxy S25 layout: footer content above fixed nav; deep link operationId auto-opens edit (after hashchange fix); reports full PDF generation → preview opens; zero console errors (except transient Radix title warning — fixed via VisuallyHidden in empty preview state).
+
+Stage Summary:
+- v1.1.0 complete: 2 critical data-safety bugs + ~30 audited bugs fixed; PDF pipeline rewritten and pixel-verified; 8 advanced features added. tsc 0, lint 0, all E2E green. versionCode 3 / versionName 1.1.0. Committed locally — APK rebuild + push + Release v1.1.0 awaits user's new token (user said they will provide it).

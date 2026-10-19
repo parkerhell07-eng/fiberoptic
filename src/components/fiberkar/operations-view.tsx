@@ -55,6 +55,7 @@ import { useAppStore } from '@/store/app-store'
 import { PhotoGallery } from './photo-gallery'
 import { PhotoPickerButton } from './photo-picker'
 import { ConfirmDialog, EmptyState, Field, ItemCard, JalaliDatePicker, PageHeader, StatusBadge } from './primitives'
+import { CsvExportButton } from './csv-export-button'
 
 // مقدار «هیچ» برای Select های اختیاری/فیلتر
 const NONE = 'none'
@@ -199,6 +200,8 @@ export default function OperationsView() {
   )
   const [errors, setErrors] = React.useState<OperationErrors>({})
   const [busy, setBusy] = React.useState(false)
+  // بنر موفقیت در حالت ایجاد (دیالوگ باز می‌ماند تا عکس با شناسه واقعی پیوست شود)
+  const [created, setCreated] = React.useState(false)
 
   // ---------- حذف ----------
   const [deleteTarget, setDeleteTarget] = React.useState<Operation | null>(null)
@@ -235,10 +238,18 @@ export default function OperationsView() {
   }, [boxes, form.projectId, form.routeId, form.boxId])
 
   // ---------- کنترل فرم ----------
+  // پیش‌فرض ایجاد: از فیلترهای فعال کاربر، با بازگشت به پارامترهای ناوبری
   function openCreate() {
-    setForm(emptyForm(params.projectId, params.routeId, params.boxId))
+    setForm(
+      emptyForm(
+        filterProject ?? params.projectId,
+        filterRoute ?? params.routeId,
+        filterBox ?? params.boxId
+      )
+    )
     setEditingId(null)
     setErrors({})
+    setCreated(false)
     setDialogOpen(true)
   }
 
@@ -260,12 +271,16 @@ export default function OperationsView() {
     })
     setEditingId(op.id)
     setErrors({})
+    setCreated(false)
     setDialogOpen(true)
   }
 
   function handleDialogChange(open: boolean) {
     setDialogOpen(open)
-    if (!open) setErrors({})
+    if (!open) {
+      setErrors({})
+      setCreated(false)
+    }
   }
 
   function setFormProject(id: string | undefined) {
@@ -345,10 +360,11 @@ export default function OperationsView() {
         toast.success(messages.updated)
         setDialogOpen(false)
       } else {
-        const created = await createOperation(input)
+        const rec = await createOperation(input)
         // رفتن به حالت ویرایش تا بلافاصله بتوان عکس پیوست کرد
-        setEditingId(created.id)
+        setEditingId(rec.id)
         setErrors({})
+        setCreated(true)
         toast.success(messages.saved)
       }
     } catch {
@@ -372,6 +388,21 @@ export default function OperationsView() {
     }
   }
 
+  // ---------- لینک عمیق: باز شدن خودکار ویرایش برای operationId (فقط یک بار در هر نشانی) ----------
+  const deepLinkConsumedRef = React.useRef(false)
+  React.useEffect(() => {
+    deepLinkConsumedRef.current = false
+  }, [params.operationId])
+  React.useEffect(() => {
+    if (deepLinkConsumedRef.current) return
+    const id = params.operationId
+    if (!id || !operations) return
+    deepLinkConsumedRef.current = true
+    const rec = operations.find((o) => o.id === id)
+    if (rec) openEdit(rec)
+     
+  }, [operations, params.operationId])
+
   // ================= رندر =================
   return (
     <>
@@ -380,10 +411,13 @@ export default function OperationsView() {
         subtitle={operations ? `${toFa(operations.length)} مورد` : undefined}
         onBack={back}
         actions={
-          <Button onClick={openCreate} className="min-h-11">
-            <Plus className="size-4" />
-            ثبت جدید
-          </Button>
+          <div className="flex items-center gap-2">
+            <CsvExportButton kind="operations" projectId={filterProject} className="min-h-11" />
+            <Button onClick={openCreate} className="min-h-11">
+              <Plus className="size-4" />
+              ثبت جدید
+            </Button>
+          </div>
         }
       />
 
@@ -506,6 +540,13 @@ export default function OperationsView() {
       {/* دیالوگ ثبت/ویرایش */}
       <Dialog open={dialogOpen} onOpenChange={handleDialogChange}>
         <DialogContent dir="rtl" className="max-h-[85vh] max-w-lg overflow-y-auto">
+          <form
+            onSubmit={(e) => {
+              e.preventDefault()
+              handleSave()
+            }}
+            className="flex flex-col gap-4"
+          >
           <DialogHeader>
             <DialogTitle>{editingId ? 'ویرایش عملیات' : 'ثبت عملیات جدید'}</DialogTitle>
             <DialogDescription>
@@ -514,6 +555,15 @@ export default function OperationsView() {
                 : 'اطلاعات عملیات اجرایی را تکمیل و ذخیره کنید.'}
             </DialogDescription>
           </DialogHeader>
+
+          {created && (
+            <div
+              role="status"
+              className="flex items-center gap-2 rounded-lg border border-primary/30 bg-primary/10 px-3 py-2.5 text-sm font-medium text-primary"
+            >
+              ذخیره شد ✓ — اکنون می‌توانید برای این مورد عکس ثبت کنید یا مشخصات را تکمیل کنید
+            </div>
+          )}
 
           <div className="flex flex-col gap-4">
             <Field label="عنوان عملیات" required error={errors.title}>
@@ -693,14 +743,15 @@ export default function OperationsView() {
           </div>
 
           <DialogFooter className="flex-row justify-start gap-2">
-            <Button onClick={handleSave} disabled={busy} className="min-h-11 flex-1">
+            <Button type="submit" disabled={busy} className="min-h-11 flex-1">
               {busy && <Loader2 className="size-4 animate-spin" />}
               {editingId ? 'ذخیره تغییرات' : 'ثبت و ذخیره'}
             </Button>
-            <Button variant="outline" onClick={() => setDialogOpen(false)} disabled={busy} className="min-h-11 flex-1">
+            <Button variant="outline" type="button" onClick={() => setDialogOpen(false)} disabled={busy} className="min-h-11 flex-1">
               بستن
             </Button>
           </DialogFooter>
+          </form>
         </DialogContent>
       </Dialog>
 
@@ -797,12 +848,12 @@ function OperationCard({
 function RowMenu({ onEdit, onDelete }: { onEdit: () => void; onDelete: () => void }) {
   return (
     <DropdownMenu dir="rtl">
-      <DropdownMenuTrigger asChild>
+      <DropdownMenuTrigger asChild onClick={(e) => e.stopPropagation()}>
         <Button variant="ghost" size="icon" className="size-11 shrink-0" aria-label="گزینه‌های بیشتر">
           <MoreVertical className="size-4" />
         </Button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" className="min-w-32">
+      <DropdownMenuContent align="end" className="min-w-32" onClick={(e) => e.stopPropagation()}>
         <DropdownMenuItem onClick={onEdit}>
           <Pencil className="size-4" />
           ویرایش
