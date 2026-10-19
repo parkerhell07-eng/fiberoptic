@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  سیاست امنیتی شبکه — ترافیک رمزنشده (HTTP ساده) به‌طور کامل ممنوع است.
+  اپ کاملاً آفلاین است و فقط androidScheme https استفاده می‌کند؛ این پیکربندی
+  همین قید را در سطح سیستم تثبیت می‌کند و نشانی تمیزی برای Play Protect و
+  آنتی‌ویروس‌ها است (نبود ترافیک کلاین‌تکت = گزارش امنیتی تمیز).
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false" />
+</network-security-config>

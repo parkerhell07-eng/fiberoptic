@@ -123,9 +123,18 @@ export default function Home() {
   const moreActive = view === 'photos' || view === 'profiles' || view === 'reports' || view === 'backup' || view === 'search'
 
   return (
-    <div className="flex min-h-dvh flex-col bg-background">
-      {/* هدر */}
-      <header className="sticky top-0 z-30 border-b bg-background/90 backdrop-blur supports-[backdrop-filter]:bg-background/75">
+    <div
+      className="flex min-h-dvh flex-col bg-background"
+      style={{
+        paddingLeft: 'env(safe-area-inset-left)',
+        paddingRight: 'env(safe-area-inset-right)',
+      }}
+    >
+      {/* هدر — پدینگ بالا برای status bar در حالت edge-to-edge اندروید */}
+      <header
+        className="sticky top-0 z-30 border-b bg-background/90 backdrop-blur supports-[backdrop-filter]:bg-background/75"
+        style={{ paddingTop: 'env(safe-area-inset-top)' }}
+      >
         <div className="mx-auto flex h-14 w-full max-w-3xl items-center gap-2 px-4">
           <button
             type="button"
@@ -175,7 +184,7 @@ export default function Home() {
       {/* فوتر چسبان به پایین */}
       <footer className="mt-auto border-t bg-muted/40 pb-[calc(env(safe-area-inset-bottom)+5.5rem)] pt-3">
         <div className="mx-auto flex w-full max-w-3xl flex-wrap items-center justify-center gap-x-4 gap-y-1 px-4 text-xs text-muted-foreground">
-          <span>فیبرکار نسخه ۱٫۱</span>
+          <span>فیبرکار نسخه ۱٫۲</span>
           <span className="flex items-center gap-1">
             <WifiOff className="size-3.5" />
             کاملاً آفلاین — داده‌ها فقط روی همین دستگاه

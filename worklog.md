@@ -387,3 +387,23 @@ Work Log:
 Stage Summary:
 - Live: Release https://github.com/parkerhell07-eng/fiberoptic/releases/tag/v1.1.0 with signed fiberkar-v1.1.0-release.apk + debug APK; main pushed with the entire v1.1.0 audit (Task 10) + docs; CI pipeline fixed for future tags.
 - KEY ROTATION: v1.1.0 ships with a new signing key. Users on 1.0/1.0.1 must follow backup -> uninstall -> install -> restore (documented in README + release notes). keystore now lives at keystore/fiberkar-release.keystore inside the persisted project volume (gitignored) so future sandbox resets cannot lose it again; user is advised to keep an off-machine copy of it + passwords.
+
+---
+Task ID: 12
+Agent: orchestrator (Z.ai Code)
+Task: User feedback round 2 — app scale/fullscreen on phones, PDF spacing + photo grid, general polish, install-time security hardening (v1.2.0, built locally — NOT published, awaiting user token).
+
+Work Log:
+- Root-caused «app too big / takes whole screen»: Capacitor 8 SystemBars plugin passes system-bar insets to CSS when viewport-fit=cover AND WebView≥140; the app shell had NO top safe-area padding → header/content rendered under the status bar (edge-to-edge look). Additionally WebView textZoom = system fontScale×100 inflated UI on devices with large system font.
+- FIXES (Android): MainActivity.onStart → WebView textZoom=100 (consistent size like native apps, guarded null); page.tsx header paddingTop env(safe-area-inset-top) + root padding-inline env(safe-area-inset-left/right); bottom nav & footer already had bottom insets. Footer version text ۱٫۱ → ۱٫۲.
+- FIXES (PDF spacing): kvTable (project info / meterage total) was ONE unbreakable block → tall values pushed whole table to next page leaving big gaps; replaced with kvTableBlocks(tableId, rows) = per-row blocks with margin-top:-1px continuity (same pattern as data tables). longParagraphs chunk 900→450 + split on explicit newlines first → tighter packing; consecutive chunks render seamlessly (paragraph blocks have no margins).
+- FIXES (PDF photos): replaced per-photo stacked blocks (maxH 300, one per line, spilling across pages) with photoGridRow — 2-column grid, uniform 230px cells, flex-centered max-width/max-height images (NO object-fit — html2canvas-pro risk), title + 2-line-clamped caption per cell; rows are atomic blocks → page breaks only between rows; ~6 photos/page instead of ~2. Verified with 6 mixed-aspect test photos (portrait/landscape/square): side-by-side, no distortion, no crop.
+- FIXES (PDF orphan titles): paginate() keepWithNext used fixed KEEP_MIN=96 which let «تصاویر» title sit alone at page bottom (next grid row ~310px didn't fit); now uses actual next-block height capped KEEP_MAX=340 → title moves with its content. E2E: full report of test project (long multiline description + long cable spec + 6 photos) = 3 pages; page 1 info+description compact (no gaps), page 2 box spec rows flow + clean section ends, page 3 = title + 3×2 photo grid. Rendered pages visually inspected via pdftoppm.
+- SECURITY hardening: Network Security Config (cleartextTrafficPermitted=false) + android:networkSecurityConfig in manifest (app is offline, https scheme only — clean profile for Play Protect/AVs); release build now R8 minifyEnabled + shrinkResources (5.2MB → 3.0MB, 42% smaller) with proguard rules keeping com.getcapacitor.**, app classes, @JavascriptInterface members, line-number attrs; permissions audit = INTERNET only; signing v2+v3 verified.
+- Investigation note: during E2E cleanup, project data «vanished» across agent-browser restarts — proven environment artifact (headless browser profile discarded on close), NOT app bug; full create→delete→count(1→0)+toast flow re-verified in a single session with real UI clicks.
+- Gates: tsc 0, lint 0, build:cap OK, cap sync OK, gradle assembleDebug+assembleRelease OK (R8), zipalign+apksigner (same v1.1.0 key → in-place upgrade from 1.1.0 preserved), aapt: versionCode 4 / versionName 1.2.0 / label فیبرکار / INTERNET-only, apksigner verify v2+v3 OK, networkSecurityConfig present in compiled manifest.
+- Artifacts: /tmp/fiberkar-v1.2.0-release.apk (3,007,095 B) + debug (6,880,155 B); NOT committed to git (gitignored), NOT pushed. README updated to v1.2.0 (badge/links/changelog + in-place upgrade note). Committed locally. Awaiting user's new token to push + create Release v1.2.0.
+
+Stage Summary:
+- v1.2.0 ready: phone-scale fixes (textZoom + safe-area insets), PDF table-gap fix + 2-col photo grid + orphan-title fix (pixel-verified), 42% smaller signed APK with hardened security profile.
+- On publish: push main, create Release v1.2.0 with the two local APKs (CI will also attach unsigned ones — delete those after run), tag triggers fixed CI.

@@ -1,21 +1,20 @@
-# Add project specific ProGuard rules here.
-# You can control the set of applied configuration files using the
-# proguardFiles setting in build.gradle.
-#
-# For more details, see
-#   http://developer.android.com/guide/developing/tools/proguard.html
+# FiberKar — قواعد R8/ProGuard برای بیلد Release
+# Capacitor پل WebView/JavaScript دارد؛ کلاس‌های پل نباید حذف/تغییرنام شوند.
 
-# If your project uses WebView with JS, uncomment the following
-# and specify the fully qualified class name to the JavaScript interface
-# class:
-#-keepclassmembers class fqcn.of.javascript.interface.for.webview {
-#   public *;
-#}
+# کلاس‌های هستهٔ Capacitor (پل JS، پلاگین‌ها، Intent ها)
+-keep class com.getcapacitor.** { *; }
 
-# Uncomment this to preserve the line number information for
-# debugging stack traces.
-#-keepattributes SourceFile,LineNumberTable
+# کلاس‌های خود اپ (MainActivity و ...)
+-keep class com.fiberkar.app.** { *; }
 
-# If you keep the line number information, uncomment this to
-# hide the original source file name.
-#-renamesourcefileattribute SourceFile
+# پلاگین‌های Capacitor (filesystem / share) — از consumer rules خودشان هم استفاده می‌شود
+-keep class com.capacitorjs.plugins.** { *; }
+
+# متدهای @JavascriptInterface هرگز حذف نشوند
+-keepclassmembers class * {
+    @android.webkit.JavascriptInterface <methods>;
+}
+
+# خطاها با شماره خط خوانا بمانند (تشخیص آسان‌تر مشکل در لاگ‌های کاربران)
+-keepattributes SourceFile,LineNumberTable
+-renamesourcefileattribute SourceFile

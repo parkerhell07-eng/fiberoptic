@@ -140,19 +140,21 @@ function sectionTitle(text: string, count?: number): Block {
   }
 }
 
-function kvTable(rows: Array<[string, string]>): Block {
-  return {
-    html: `<table style="${base}width:100%;border-collapse:collapse;font-size:11.5px;">
-      ${rows
-        .map(
-          ([k, v], i) => `<tr style="background:${i % 2 ? C.zebra : '#ffffff'};">
-        <td style="border:1px solid ${C.border};padding:6px 10px;font-weight:600;color:${C.sub};width:32%;">${esc(k)}</td>
-        <td style="border:1px solid ${C.border};padding:6px 10px;">${v}</td>
-      </tr>`
-        )
-        .join('')}
+/**
+ * جدول کلید/مقدار شکستنی — هر ردیف یک بلوک مستقل (tableId مشترک) تا وقتی متن توضیحات/مشخصات
+ * بلند می‌شود، جدول کل به صفحه بعد پرتاب نشود و فاصلهٔ بزرگ بین جدول‌ها نماند.
+ * margin-top:-1px ردیف‌ها را به‌صورت جدول پیوسته نشان می‌دهد (همان الگوی جدول‌های داده).
+ */
+function kvTableBlocks(tableId: string, rows: Array<[string, string]>): Block[] {
+  return rows.map(([k, v], i) => ({
+    tableId,
+    html: `<table style="${base}width:100%;table-layout:fixed;border-collapse:collapse;font-size:11.5px;${i > 0 ? 'margin-top:-1px;' : ''}">
+      <tr style="background:${i % 2 ? C.zebra : '#ffffff'};">
+        <td style="border:1px solid ${C.border};padding:6px 10px;font-weight:600;color:${C.sub};width:32%;overflow-wrap:anywhere;vertical-align:top;">${esc(k)}</td>
+        <td style="border:1px solid ${C.border};padding:6px 10px;overflow-wrap:anywhere;vertical-align:top;">${v}</td>
+      </tr>
     </table>`,
-  }
+  }))
 }
 
 /** HTML سرستون جدول شکستنی (عرض‌ها درصدی؛ layout ثابت برای تراز ستون‌ها بین ردیف‌ها) */
@@ -193,16 +195,23 @@ function emptyHint(text: string): Block {
   return { html: `<div style="${base}font-size:11px;color:${C.muted};padding:6px 2px;">${esc(text)}</div>` }
 }
 
-function photoBlock(dataUrl: string, title: string, caption: string, w: number, h: number): Block {
-  const maxH = 300
-  const ratio = Math.min(1, maxH / Math.max(1, h))
-  const ph = Math.round(h * ratio)
+/**
+ * ردیف شبکهٔ عکس‌ها — هر ردیف یک بلوک اتمیک با ۲ عکس کنار هم، ارتفاع یکنواخت.
+ * به‌جای object-fit (پشتیبانی نامطمئن در html2canvas) از max-width/max-height +
+ * وسط‌چین flex استفاده می‌شود؛ عکس عمودی یا افقی هرگز کج/کشیده/بریده نمی‌شود.
+ */
+const GRID_IMG_H = 230
+function photoGridRow(items: Array<{ title: string; caption: string; url: string }>): Block {
+  const cell = (it: { title: string; caption: string; url: string }) => `
+    <div style="display:flex;flex-direction:column;min-width:0;">
+      <div style="font-size:10px;font-weight:600;color:${C.sub};margin-bottom:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${esc(it.title)}</div>
+      <div style="height:${GRID_IMG_H}px;display:flex;align-items:center;justify-content:center;background:#ffffff;border:1px solid ${C.border};border-radius:10px;overflow:hidden;">
+        <img src="${it.url}" style="max-width:100%;max-height:100%;display:block;" />
+      </div>
+      ${it.caption ? `<div style="font-size:9.5px;color:${C.sub};margin-top:3px;line-height:1.6;max-height:3.2em;overflow:hidden;">${esc(it.caption)}</div>` : ''}
+    </div>`
   return {
-    html: `<div style="${base}margin:10px 0;text-align:center;">
-      <div style="font-size:10.5px;font-weight:600;color:${C.sub};margin-bottom:4px;">${esc(title)}</div>
-      <img src="${dataUrl}" style="height:${ph}px;max-width:100%;border:1px solid ${C.border};border-radius:10px;" />
-      ${caption ? `<div style="font-size:10px;color:${C.sub};margin-top:4px;">${esc(caption)}</div>` : ''}
-    </div>`,
+    html: `<div style="${base}display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:8px 0;">${items.map(cell).join('')}</div>`,
   }
 }
 
@@ -221,23 +230,36 @@ function statsRow(items: Array<{ label: string; value: string }>): Block {
   }
 }
 
-/** پاراگراف‌های بلند — شکست روی مرز کلمه (نه برش ثابت کاراکتری) */
-function longParagraphs(text: string, chunk = 900): Block[] {
+/**
+ * پاراگراف‌های بلند به تکه‌های کوچک شکسته می‌شوند (chunk=450) تا صفحه‌بندی متراکم بماند —
+ * تکهٔ بلند اگر در فضای باقی‌ماندهٔ صفحه جا نشود کلش به صفحهٔ بعد می‌رود و حفرهٔ بزرگ می‌سازد.
+ * اول بر خط‌های خودِ متن شکسته می‌شود (پرسه‌خط‌ها حفظ)، بعد خط‌های خیلی بلند بر مرز کلمه.
+ */
+function longParagraphs(text: string, chunk = 450): Block[] {
   const t = String(text ?? '').trim()
   if (!t) return []
-  if (t.length <= chunk) return [paragraph(t)]
-  const words = t.split(/\s+/)
   const out: Block[] = []
-  let cur = ''
-  for (const w of words) {
-    if (cur && cur.length + 1 + w.length > chunk) {
-      out.push(paragraph(cur))
-      cur = w
-    } else {
-      cur = cur ? `${cur} ${w}` : w
+  const segments = t
+    .split(/\n+/)
+    .map((s) => s.trim())
+    .filter(Boolean)
+  for (const seg of segments) {
+    if (seg.length <= chunk) {
+      out.push(paragraph(seg))
+      continue
     }
+    const words = seg.split(/\s+/)
+    let cur = ''
+    for (const w of words) {
+      if (cur && cur.length + 1 + w.length > chunk) {
+        out.push(paragraph(cur))
+        cur = w
+      } else {
+        cur = cur ? `${cur} ${w}` : w
+      }
+    }
+    if (cur) out.push(paragraph(cur))
   }
-  if (cur) out.push(paragraph(cur))
   return out
 }
 
@@ -319,7 +341,7 @@ async function buildBlocks(
       if (contractor) infoRows.push(['پیمانکار', dash(`${contractor.firstName} ${contractor.lastName}`)])
       if (executor) infoRows.push(['مجری', dash(`${executor.firstName} ${executor.lastName}`)])
     }
-    blocks.push(kvTable(infoRows))
+    blocks.push(...kvTableBlocks('proj-info', infoRows))
     if (project.description) blocks.push(...longParagraphs(`توضیحات: ${project.description}`))
 
     blocks.push(
@@ -593,7 +615,7 @@ async function buildBlocks(
         const r = computeConsumed(c.initialMeters, c.returnedMeters, c.consumedUser)
         return s + (r.valid && r.value !== undefined ? r.value : 0)
       }, 0)
-      blocks.push(kvTable([['مجموع متراژ مصرفی (بدون دوباره‌شماری)', formatMeters(total)]]))
+      blocks.push(...kvTableBlocks('dc-total', [['مجموع متراژ مصرفی (بدون دوباره‌شماری)', formatMeters(total)]]))
     }
   }
 
@@ -608,6 +630,8 @@ async function buildBlocks(
     if (photos.length > 0) {
       // عنوان شامل تعداد واقعی درج‌شده — آمار بالا کل عکس‌های پروژه را نشان می‌دهد (M4)
       blocks.push(sectionTitle(`تصاویر (درج‌شده: ${toFa(photos.length)})`))
+      // بارگذاری همهٔ عکس‌ها با پیشرفت واقعی (M1)
+      const loaded: Array<{ title: string; caption: string; url: string }> = []
       for (let idx = 0; idx < photos.length; idx++) {
         const p = photos[idx]
         opts.onProgress?.({ phase: 'photos', done: idx + 1, total: photos.length })
@@ -618,19 +642,17 @@ async function buildBlocks(
             continue
           }
           const url = await blobToReportDataUrl(blob, mode === 'summary' ? 700 : 900, 0.8)
-          blocks.push(
-            photoBlock(
-              url,
-              p.title,
-              `${photoCategoryLabels[p.category]}${p.description ? ' — ' + p.description : ''}`,
-              p.width,
-              p.height
-            )
-          )
+          loaded.push({
+            title: p.title,
+            caption: `${photoCategoryLabels[p.category]}${p.description ? ' — ' + p.description : ''}`,
+            url,
+          })
         } catch {
           blocks.push(note(`تصویر «${p.title}» قابل درج نبود`))
         }
       }
+      // شبکهٔ ۲ستونه — عکس‌ها مرتب کنار هم؛ شکست صفحه فقط بین ردیف‌ها (بدون عکس افتاده تنها)
+      for (let i = 0; i < loaded.length; i += 2) blocks.push(photoGridRow(loaded.slice(i, i + 2)))
     } else {
       blocks.push(emptyHint('تصویری برای درج در گزارش وجود ندارد.'))
     }
@@ -650,6 +672,9 @@ const CONTENT_W = PAGE_W - PAD_X * 2
 const CONTENT_H = PAGE_H - PAD_TOP - PAD_BOTTOM - 24
 // حداقل فضای بعد از تیتر بخش/سرستون تا حداقل یک ردیف در همین صفحه جا شود (کنترل یتیم)
 const KEEP_MIN = 96
+/** سقف ارتفاعی که برای «نیستن تیتر یتیم» در نظر گرفته می‌شود —
+ *  به‌جای حدس ثابت، ارتفاع واقعی بلوک بعدی (مثل ردیف شبکهٔ عکس ~۳۱۰px) ملاک است */
+const KEEP_MAX = 340
 
 interface PageItem {
   html: string
@@ -674,8 +699,13 @@ function paginate(
     const isRow = !!b.tableId && !isHeader
 
     let mustBreak = acc > 0 && acc + h > CONTENT_H
-    // تیتر بخش/سرستون تنها نماند — اگر جا برای حداقل یک ردیف بعدش نیست، از همان اول صفحه جدید
-    if (!mustBreak && b.keepWithNext && acc > 0 && acc + h + KEEP_MIN > CONTENT_H) mustBreak = true
+    // تیتر بخش/سرستون تنها نماند — اگر بلوکِ بعد از آن (با ارتفاع واقعی) در همین صفحه جا نیست،
+    // تیتر هم به صفحهٔ بعد می‌رود تا انتهای صفحه یتیم نماند
+    if (!mustBreak && b.keepWithNext && acc > 0) {
+      const nextH = heights[i + 1] ?? 0
+      const need = nextH > 0 ? Math.min(nextH, KEEP_MAX) : KEEP_MIN
+      if (acc + h + need > CONTENT_H) mustBreak = true
+    }
 
     if (mustBreak) {
       pages.push([])
