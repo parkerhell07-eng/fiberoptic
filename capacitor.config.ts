@@ -7,7 +7,8 @@ const config: CapacitorConfig = {
   webDir: '.next-cap',
   android: {
     allowMixedContent: false,
-    captureInput: true,
+    // توجه: captureInput هرگز true نشود — InputConnection ساده‌شده می‌سازد که
+    // تایپ فارسی/IME استاندارد اندروید را در WebView خراب می‌کند (باگ فرم‌ها)
     webContentsDebuggingEnabled: false,
   },
   server: {

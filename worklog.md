@@ -262,3 +262,22 @@ Stage Summary:
   https://github.com/parkerhell07-eng/fiberoptic/releases/tag/v1.0
 - Remaining (needs user action): activate CI by pasting docs/ci/build-apk.yml to .github/workflows/ via web UI, or grant "Workflows: R/W" on a new token. Optional signing Secrets for CI-signed builds.
 - Token hygiene: recommend user revoke/rotate the PAT now that push+release are done.
+
+---
+Task ID: 8
+Agent: orchestrator (Z.ai Code)
+Task: Bugfix — user report: profile form fields cleared + «نام الزامی است» error on save (in APK on device).
+
+Work Log:
+- Reproduced flow in dev build (desktop) → PASS (save works, toast shown).
+- Reproduced flow on production static export (.next-cap served :3030, desktop) → PASS.
+- Root-cause analysis: symptom (text visible while typing, fields cleared on save, validation sees empty state) = controlled inputs never received onChange in Android WebView → traced to capacitor.config.ts `android.captureInput: true` which per Capacitor docs enables "a simpler keyboard which may have some limitations" via an alternative InputConnection → breaks standard Persian IME commit into WebView inputs.
+- FIX: removed captureInput (default false = standard IME path used by all Capacitor apps); added guard comment in config.
+- Bumped android versionCode 2 / versionName 1.0.1 (in-place update on device, same signature).
+- Rebuilt: cap sync + gradlew assembleDebug assembleRelease (43s) → zipalign + apksigner (same keystore) → download/fiberkar-v1.0.1-release.apk (5.19MB) + debug; aapt verified (versionCode=2, versionName=1.0.1, label فیبرکار); capacitor.config.json inside APK verified WITHOUT captureInput.
+- Old v1.0 APK files removed from download/; public/fiberkar-v1.0.1.apk published for preview download (HTTP 200 verified).
+- Committed locally. NOT pushed yet — user revoked previous token; will push + create Release v1.0.1 when new token arrives.
+
+Stage Summary:
+- Fix is a config revert to Capacitor defaults; controlled React inputs work normally with standard Android IME. Cannot run Android emulator in sandbox → final on-device confirmation pending user install of v1.0.1.
+- If user still sees the bug after v1.0.1: next step would be hardening forms (uncontrolled inputs + FormData read at save).
