@@ -116,7 +116,7 @@ export default function BackupView() {
       const { blob, info } = await createBackupBlob()
       const how = await saveBlobToDisk(blob, backupFileName())
       toast.success(`پشتیبان ذخیره شد (${formatBytes(info.size)})`, {
-        description: how === 'picker' ? 'فایل در محل انتخابی شما ذخیره شد' : 'فایل در پوشه دانلودها ذخیره شد',
+        description: how === 'picker' ? 'فایل در محل انتخابی شما ذخیره شد' : 'فایل در حافظه دستگاه ذخیره شد (پوشه اسناد یا دانلودها)',
       })
     } catch (e) {
       if ((e as Error)?.name === 'AbortError') {

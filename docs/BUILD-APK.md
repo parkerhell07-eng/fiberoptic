@@ -1,68 +1,100 @@
 # فیبرکار — راهنمای ساخت APK اندروید (Capacitor)
 
 فیبرکار یک اپلیکیشن **وب آفلاین‌محور (PWA)** است که داده‌ها را کاملاً روی دستگاه نگه می‌دارد
-(IndexedDB). این معماری با WebView اندروید از طریق **Capacitor** به یک APK واقعی تبدیل می‌شود —
+(IndexedDB). این معماری با WebView اندروید از طریق **Capacitor 8** به یک APK واقعی تبدیل می‌شود —
 بدون هیچ سرور یا اینترنتی.
 
-> ⚠️ در محیط توسعه فعلی (سندباکس) Android SDK و Gradle موجود نیست، بنابراین ساخت APK باید
-> یا از طریق **GitHub Actions** (آماده شده در `.github/workflows/build-apk.yml`) یا روی یک
-> سیستم با Android Studio انجام شود.
+> ✅ این فرآیند **واقعاً اجرا و تست شده است**: APK امضاشده نسخه ۱٫۰ با موفقیت ساخته شد
+> (package: `com.fiberkar.app` — minSdk 24 / Android 7+ — targetSdk 36 — حجم ۵٫۲ مگابایت —
+> تنها مجوز: INTERNET).
 
 ---
 
 ## روش ۱ — ساخت خودکار با GitHub Actions (توصیه‌شده)
 
-1. مخزن را روی GitHub قرار دهید (پس از دریافت توکن دسترسی).
+1. مخزن را روی GitHub قرار دهید.
 2. به تب **Actions** بروید → ورک‌فلو **Build FiberKar Android APK** → **Run workflow**.
-   (یا یک تگ `v1.0.0` پوش کنید تا همزمان Release هم ساخته شود.)
-3. پس از پایان، از بخش **Artifacts** فایل `fiberkar-debug-apk` را دانلود کنید.
-   - `app-debug.apk` — قابل نصب مستقیم برای تست.
-   - `app-release-unsigned.apk` — برای انتشار نیازمند امضا (بخش امضا در پایین).
+   (یا یک تگ `v1.0` پوش کنید تا همزمان Release هم ساخته شود.)
+3. پس از پایان، از بخش **Artifacts** فایل APK را دانلود کنید:
+   - `fiberkar-debug-apk` → `app-debug.apk` — قابل نصب مستقیم برای تست.
+   - `fiberkar-release-apk-unsigned` → برای انتشار نیازمند امضا (بخش امضا در پایین).
+   - `fiberkar-release-apk-signed` → فقط اگر Secretهای امضا تنظیم شده باشند.
 
 ورک‌فلو شامل این مراحل است: نصب وابستگی‌ها → lint → بیلد استاتیک Next.js
-(`CAP_EXPORT=1`) → `cap init/add/sync android` → `gradlew assembleDebug/Release` → آپلود آرتیفکت.
+(`bun run build:cap`) → `bunx cap sync android` → `gradlew assembleDebug/Release` →
+امضای اختیاری با Secretها → آپلود آرتیفکت / Release.
 
-## روش ۲ — ساخت محلی با Android Studio
+### امضای خودکار در CI (اختیاری)
+
+این Secretها را در تنظیمات مخزن (Settings → Secrets and variables → Actions) اضافه کنید:
+
+| Secret | توضیح |
+|---|---|
+| `FIBERKAR_KEYSTORE_B64` | فایل keystore به‌صورت base64: `base64 -w0 fiberkar.keystore` |
+| `FIBERKAR_KEYSTORE_PASSWORD` | رمز keystore |
+| `FIBERKAR_KEY_ALIAS` | نام alias (مثلاً `fiberkar`) |
+| `FIBERKAR_KEY_PASSWORD` | رمز کلید |
+
+> ⚠️ فایل keystore هرگز نباید داخل مخزن قرار گیرد — فقط از طریق Secret.
+
+## روش ۲ — ساخت محلی (خط فرمان — تست‌شده)
+
+پیش‌نیازها: JDK 21 کامل (javac دارد)، Android SDK (platform 36 + build-tools 36.0.0)، Bun.
 
 ```bash
-# ۱) خروجی استاتیک وب
-CAP_EXPORT=1 bun run build          # پوشه out/ ساخته می‌شود
+# ۱) خروجی استاتیک وب (در پوشه .next-cap ساخته می‌شود — dev server را مختل نمی‌کند)
+bun run build:cap
 
-# ۲) نصب Capacitor
-bun add -d @capacitor/cli
-bun add @capacitor/core @capacitor/android
-bunx cap init fiberkar app.fiberkar --web-dir out
-bunx cap add android
-
-# ۳) باز کردن پروژه اندروید و بیلد
+# ۲) سینک وب‌اپ داخل پروژه اندروید (پوشه android/ از قبل در مخزن است)
 bunx cap sync android
-bunx cap open android   # Android Studio → Build APK
-# یا خط فرمان:
-cd android && ./gradlew assembleDebug
-# خروجی: android/app/build/outputs/apk/debug/app-debug.apk
+
+# ۳) بیلد APK
+cd android
+./gradlew assembleDebug          # خروجی: app/build/outputs/apk/debug/app-debug.apk
+./gradlew assembleRelease        # خروجی: app/build/outputs/apk/release/app-release-unsigned.apk
 ```
 
-## امضای Release APK
+اگر پوشه `android/` را حذف کرده‌اید، یک‌بار `bunx cap add android` اجرا کنید.
+
+## روش ۳ — ساخت با Android Studio
+
+`bun run build:cap` → `bunx cap sync android` → `bunx cap open android` → Build → Build APK(s).
+
+## امضای Release APK (روش zipalign + apksigner — تست‌شده)
 
 ```bash
-keytool -genkey -v -keystore fiberkar.keystore -alias fiberkar -keyalg RSA -keysize 2048 -validity 10000
-# android/app/build.gradle:
-#   signingConfigs { release { storeFile file('fiberkar.keystore'); storePassword '***'; keyAlias 'fiberkar'; keyPassword '***' } }
-#   buildTypes { release { signingConfig signingConfigs.release } }
-./gradlew assembleRelease
+# ساخت keystore (فقط یک‌بار — این فایل را برای همیشه نگه دارید!)
+keytool -genkeypair -keystore fiberkar-release.keystore -alias fiberkar \
+  -keyalg RSA -keysize 2048 -validity 10000 \
+  -dname "CN=FiberKar, O=FiberKar, L=Tehran, C=IR"
+
+# هم‌ترازی و امضا
+BT=$ANDROID_HOME/build-tools/36.0.0
+$BT/zipalign -p -f 4 app-release-unsigned.apk fiberkar-aligned.apk
+$BT/apksigner sign --ks fiberkar-release.keystore --ks-key-alias fiberkar \
+  --out fiberkar-v1.0-release.apk fiberkar-aligned.apk
+$BT/apksigner verify --print-certs fiberkar-v1.0-release.apk
 ```
+
+> ⚠️ keystore و رمزهای آن را در جای امن نگه دارید؛ بدون آن امکان انتشار آپدیت با همان امضا وجود ندارد.
+> ⚠️ فایل keystore هرگز نباید به مخزن گیت یا logs وارد شود.
 
 ## پیش‌نیازهای انتشار در کافه‌بازار / مایکت
 
 - [ ] APK Release امضاشده (بالای ۱۰۰٪ تست نصب/حذف/آپدیت)
-- [ ] آیکون ۵۱۲×۵۱۲ + بنر فروشگاه + اسکرین‌شات‌ها (۵ عدد)
+- [ ] آیکون ۵۱۲×۵۱۲ (موجود: `public/icons/icon-512.png`) + بنر فروشگاه + اسکرین‌شات‌ها
 - [ ] توضیحات فارسی + دسته‌بندی «ابزارها»
 - [ ] صفحه سیاست حفظ حریم خصوصی (داده‌ها فقط روی دستگاه ذخیره می‌شوند — متن آماده در README)
-- [ ] تعیین امتیاز سنی و بررسی مجوزها (اپ هیچ مجوز خطرناکی نمی‌خواهد؛ دوربین فقط از WebView File Picker)
+- [ ] تعیین امتیاز سنی و بررسی مجوزها (اپ فقط مجوز INTERNET دارد؛ دوربین از File Picker اندروید)
 
 ## نکات فنی
 
-- `next.config.ts` با متغیر محیطی `CAP_EXPORT=1` به حالت `output: "export"` می‌رود و پوشه `out/` می‌سازد.
-- Service Worker و Manifest فقط در بیلد production فعال/معتبرند؛ داخل Capacitor هم WebView آفلاین است.
-- شناسه اپ پیشنهادی: `app.fiberkar` — minSdk پیش‌فرض Capacitor (Android 6+) کافی است.
-- برای آپدیت‌های آینده تنها کافی است `out/` دوباره ساخته و `bunx cap sync android` اجرا شود.
+- `next.config.ts` با متغیر محیطی `CAP_EXPORT=1` به حالت `output: "export"` می‌رود؛ با
+  `NEXT_DIST_DIR=.next-cap` خروجی در همان پوشه ساخته می‌شود (webDir در `capacitor.config.ts`).
+- ساخت عادی (`bun run build`) دست‌نخورده است و برای استقرار وب/سرور standalone استفاده می‌شود.
+- داخل APK، اشتراک‌گذاری PDF و ذخیره پشتیبان از **پلاگین‌های بومی Capacitor**
+  (`@capacitor/share` + `@capacitor/filesystem`) استفاده می‌کنند (پل: `src/lib/native-bridge.ts`)؛
+  در وب همان رفتار قبلی (Web Share API / File Picker) حفظ شده است.
+- شناسه اپ: `com.fiberkar.app` — minSdk 24 (Android 7+)، targetSdk 36.
+- آیکون‌های لانچر و اسپلش با `bunx @capacitor/assets generate --android` از پوشه `assets/` تولید می‌شوند.
+- برای آپدیت‌های آینده: `bun run build:cap` → `bunx cap sync android` → `./gradlew assembleRelease`.

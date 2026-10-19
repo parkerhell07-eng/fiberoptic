@@ -5,6 +5,8 @@ const isCapacitorExport = process.env.CAP_EXPORT === "1";
 
 const nextConfig: NextConfig = {
   output: isCapacitorExport ? "export" : "standalone",
+  // ساخت خروجی اندروید در دایرکتوری جدا تا dev server دست نخورد
+  distDir: process.env.NEXT_DIST_DIR || ".next",
   images: isCapacitorExport ? { unoptimized: true } : undefined,
   typescript: {
     ignoreBuildErrors: true,

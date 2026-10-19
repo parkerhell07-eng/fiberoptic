@@ -4,6 +4,7 @@ import type { BackupTableName, LastBackupInfo, Photo } from './types'
 import { BACKUP_TABLES } from './types'
 import { db, getDb, resetAllData, setSetting } from './localdb'
 import { blobToDataUrl, dataUrlToBlob } from './images'
+import { isNativeApp, nativeSaveFile } from './native-bridge'
 
 export const BACKUP_VERSION = 1
 const CHECKSUM_KEY = '__checksum'
@@ -184,6 +185,11 @@ export async function saveBlobToDisk(
   blob: Blob,
   suggestedName: string
 ): Promise<'picker' | 'download'> {
+  // داخل اپ اندروید (APK): ذخیره مستقیم در پوشه اسناد دستگاه
+  if (isNativeApp()) {
+    await nativeSaveFile(blob, suggestedName)
+    return 'download'
+  }
   type PickerWindow = Window & {
     showSaveFilePicker?: (opts?: { suggestedName?: string; types?: Array<{ description: string; accept: Record<string, string[]> }> }) => Promise<{
       createWritable: () => Promise<{ write: (data: Blob) => Promise<void>; close: () => Promise<void> }>

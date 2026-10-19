@@ -213,3 +213,30 @@ Work Log:
 
 Stage Summary:
 - Deliverable: complete offline-first Persian RTL PWA + ready-made APK pipeline. APK itself NOT built here (no Android SDK in sandbox) — transparent limitation.
+
+---
+Task ID: 6
+Agent: orchestrator (Z.ai Code)
+Task: Android packaging (user request: "میخوام همین برنامه رو به برنامه ی اندرویدی تبدیل کنی و بسازی و بعدش که تموم شد ببریم روی گیتهاب") + GitHub readiness.
+
+Work Log:
+- Installed @capacitor/core@8, @capacitor/cli, @capacitor/android@8, @capacitor/filesystem, @capacitor/share.
+- Created capacitor.config.ts (appId com.fiberkar.app, appName فیبرکار, webDir .next-cap, androidScheme https).
+- next.config.ts: added NEXT_DIST_DIR env so Capacitor static export (.next-cap/) never clobbers dev .next; package.json: added build:cap script (CAP_EXPORT=1 NEXT_DIST_DIR=.next-cap next build) — fixes CI bug where old workflow ran standalone-copy steps in export mode.
+- src/lib/native-bridge.ts (NEW): native Share Sheet + save-to-Documents via Capacitor plugins, wired into pdf.ts shareOrDownloadBlob() and backup.ts saveBlobToDisk(); web behavior unchanged (isNativeApp() false).
+- Generated launcher icons + splash via @capacitor/assets from assets/ (icon 1024 + splash 2732 from public/icons).
+- Built REAL Android SDK env: downloaded cmdline-tools, accepted licenses, installed platform-tools + platforms;android-36 + build-tools;36.0.0, downloaded Temurin JDK 21 (system java was JRE-only, no javac).
+- bunx cap add android; committed android/ project; gradle.properties tuned for low-RAM builds (-Xmx1400m, no parallel).
+- BUILD SUCCESSFUL: app-debug.apk (6.86MB) + assembleRelease (5.14MB unsigned) in 2m3s.
+- Generated release keystore OUTSIDE repo (/home/z/fiberkar-release.keystore); zipalign -p 4 + apksigner sign → download/fiberkar-v1.0-release.apk (5.19MB, verified: CN=FiberKar cert OK).
+- APK verified with aapt dump badging: com.fiberkar.app v1.0, minSdk 24, targetSdk 36, label فیبرکار, ONLY INTERNET permission; web assets embedded (index.html/manifest/icons/_next).
+- Rewrote .github/workflows/build-apk.yml: bun build:cap → cap sync (android/ committed) → assembleDebug/Release → optional signing via Secrets (FIBERKAR_KEYSTORE_B64/PASSWORD/ALIAS/KEY_PASSWORD) → Release on v* tags.
+- .gitignore: /android build outputs, /.next-cap/, *.apk, *.keystore, *.idsig; eslint ignores android/ + .next-cap/ + download/.
+- Docs: docs/BUILD-APK.md rewritten (tested local build + CI signing secrets), README Android section updated with real APK facts.
+- Verification: bun run lint → 0 errors; tsc --noEmit → 0 errors; agent-browser E2E smoke: dashboard render, create project, generate PDF report (dialog + share button OK), create backup (Jalali timestamp + SHA-256 + counts shown), delete project → clean empty state; ZERO console errors.
+- Git: all changes committed locally on main. NOT pushed (awaiting user token — spec §15).
+
+Stage Summary:
+- Deliverable: REAL signed Android APK v1.0 (com.fiberkar.app) + full Capacitor project + CI pipeline + native share/save bridge.
+- Honest limits: no physical device/emulator in sandbox → install-on-device not tested here; packaging verified via aapt/apksigner + the embedded web app is the same E2E-tested code.
+- Next: push to GitHub once user provides token (fine-grained, Contents read+write); tag v1.0 triggers APK Release; optional signing secrets for signed CI APKs.

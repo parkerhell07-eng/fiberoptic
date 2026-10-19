@@ -44,7 +44,7 @@ const eslintConfig = [...nextCoreWebVitals, ...nextTypescript, {
     "no-useless-escape": "off",
   },
 }, {
-  ignores: ["node_modules/**", ".next/**", "out/**", "build/**", "next-env.d.ts", "examples/**", "skills"]
+  ignores: ["node_modules/**", ".next/**", ".next-cap/**", "out/**", "build/**", "next-env.d.ts", "examples/**", "skills", "android/**", "download/**", "public/fiberkar-*.apk"]
 }];
 
 export default eslintConfig;

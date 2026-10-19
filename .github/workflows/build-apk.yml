@@ -4,7 +4,7 @@ on:
   workflow_dispatch: # اجرای دستی از تب Actions
   push:
     tags:
-      - "v*"
+      - "v*" # ساخت خودکار APK و انتشار در Release با تگ مثل v1.0
 
 permissions:
   contents: write # برای انتشار در Releases
@@ -21,11 +21,11 @@ jobs:
         with:
           bun-version: latest
 
-      - name: Setup Java (JDK 17)
+      - name: Setup Java (JDK 21)
         uses: actions/setup-java@v4
         with:
           distribution: "temurin"
-          java-version: "17"
+          java-version: "21"
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
@@ -36,26 +36,11 @@ jobs:
       - name: Lint
         run: bun run lint
 
-      # خروجی استاتیک Next.js برای WebView اندروید
+      # خروجی استاتیک Next.js برای WebView اندروید (پوشه .next-cap)
       - name: Build static web app
-        env:
-          CAP_EXPORT: "1"
-        run: |
-          bun run build
+        run: bun run build:cap
 
-      - name: Setup Capacitor
-        run: |
-          bunx cap init fiberkar app.fiberkar --web-dir out --yes
-          bun add -d @capacitor/cli
-          bun add @capacitor/core @capacitor/android
-
-      - name: Add Android platform
-        run: bunx cap add android
-
-      - name: Configure Android app (app name)
-        run: |
-          sed -i 's/<string name="app_name">[^<]*/<string name="app_name">فیبرکار/' android/app/src/main/res/values/strings.xml || true
-
+      # پوشه android/ در مخزن موجود است؛ فقط وب‌اپ به‌روز و سینک می‌شود
       - name: Sync web assets into Android
         run: bunx cap sync android
 
@@ -68,7 +53,32 @@ jobs:
       - name: Build release APK (unsigned)
         run: |
           cd android
-          ./gradlew assembleRelease --no-daemon || true
+          ./gradlew assembleRelease --no-daemon
+
+      # امضای نسخه release فقط اگر Secretهای امضا تنظیم شده باشند:
+      #   FIBERKAR_KEYSTORE_B64  (base64 فایل keystore)
+      #   FIBERKAR_KEYSTORE_PASSWORD / FIBERKAR_KEY_ALIAS / FIBERKAR_KEY_PASSWORD
+      - name: Sign release APK
+        env:
+          FIBERKAR_KEYSTORE_B64: ${{ secrets.FIBERKAR_KEYSTORE_B64 }}
+          FIBERKAR_KEYSTORE_PASSWORD: ${{ secrets.FIBERKAR_KEYSTORE_PASSWORD }}
+          FIBERKAR_KEY_ALIAS: ${{ secrets.FIBERKAR_KEY_ALIAS }}
+          FIBERKAR_KEY_PASSWORD: ${{ secrets.FIBERKAR_KEY_PASSWORD }}
+        if: env.FIBERKAR_KEYSTORE_B64 != ''
+        run: |
+          echo "$FIBERKAR_KEYSTORE_B64" | base64 -d > /tmp/fiberkar.keystore
+          BT=$ANDROID_HOME/build-tools/36.0.0
+          APK=android/app/build/outputs/apk/release/app-release-unsigned.apk
+          $BT/zipalign -p -f 4 "$APK" /tmp/fiberkar-aligned.apk
+          $BT/apksigner sign \
+            --ks /tmp/fiberkar.keystore \
+            --ks-key-alias "$FIBERKAR_KEY_ALIAS" \
+            --ks-pass pass:"$FIBERKAR_KEYSTORE_PASSWORD" \
+            --key-pass pass:"$FIBERKAR_KEY_PASSWORD" \
+            --out android/app/build/outputs/apk/release/app-release-signed.apk \
+            /tmp/fiberkar-aligned.apk
+          rm -f /tmp/fiberkar.keystore
+          $BT/apksigner verify --print-certs android/app/build/outputs/apk/release/app-release-signed.apk
 
       - name: Upload debug APK artifact
         uses: actions/upload-artifact@v4
@@ -76,17 +86,26 @@ jobs:
           name: fiberkar-debug-apk
           path: android/app/build/outputs/apk/debug/app-debug.apk
 
-      - name: Upload release APK artifact
+      - name: Upload signed release APK artifact
+        if: env.FIBERKAR_KEYSTORE_B64 != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: fiberkar-release-apk-signed
+          path: android/app/build/outputs/apk/release/app-release-signed.apk
+
+      - name: Upload unsigned release APK artifact
+        if: env.FIBERKAR_KEYSTORE_B64 == ''
         uses: actions/upload-artifact@v4
         with:
           name: fiberkar-release-apk-unsigned
           path: android/app/build/outputs/apk/release/app-release-unsigned.apk
-          if-no-files-found: ignore
 
-      - name: Attach to GitHub Release (on tag)
+      - name: Attach APKs to GitHub Release (on tag)
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
           files: |
             android/app/build/outputs/apk/debug/app-debug.apk
+            android/app/build/outputs/apk/release/app-release-signed.apk
             android/app/build/outputs/apk/release/app-release-unsigned.apk
+          fail_on_unmatched_files: false

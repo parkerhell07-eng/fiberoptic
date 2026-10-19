@@ -18,6 +18,7 @@ import {
 } from './labels'
 import { computeConsumed, formatJalali, formatJalaliDateTime, formatMeters, formatNum, toFa } from './persian'
 import { blobToReportDataUrl } from './images'
+import { isNativeApp, nativeShareOrSaveFile } from './native-bridge'
 
 export interface ReportSections {
   info: boolean
@@ -541,6 +542,15 @@ export async function generateProjectReport(opts: ReportOptions): Promise<Blob> 
 
 // ---------- اشتراک‌گذاری / دانلود ----------
 export async function shareOrDownloadBlob(blob: Blob, filename: string): Promise<'shared' | 'downloaded'> {
+  // داخل اپ اندروید (APK): استفاده از شیت اشتراک بومی سیستم
+  if (isNativeApp()) {
+    try {
+      const res = await nativeShareOrSaveFile(blob, filename)
+      return res === 'shared' ? 'shared' : 'downloaded'
+    } catch {
+      // در صورت خطای بومی، ادامه به مسیر وب
+    }
+  }
   const file = new File([blob], filename, { type: blob.type || 'application/pdf' })
   const nav = navigator as Navigator & { canShare?: (data: { files?: File[] }) => boolean }
   if (nav.share && nav.canShare?.({ files: [file] })) {
