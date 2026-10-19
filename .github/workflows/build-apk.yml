@@ -27,9 +27,10 @@ jobs:
           distribution: "temurin"
           java-version: "21"
 
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
-
+      # GitHub ubuntu-latest runners have the Android SDK preinstalled
+      # (ANDROID_HOME + sdkmanager on PATH). The android-actions/setup-android
+      # step was removed: it failed on runner startup and is redundant here.
+      # The next step installs the exact packages we need (platform 36 + build-tools 36).
       - name: Install Android SDK packages
         run: |
           sdkmanager --install "platform-tools" "platforms;android-36" "build-tools;36.0.0" > /dev/null 2>&1 || true
