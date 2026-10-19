@@ -240,3 +240,25 @@ Stage Summary:
 - Deliverable: REAL signed Android APK v1.0 (com.fiberkar.app) + full Capacitor project + CI pipeline + native share/save bridge.
 - Honest limits: no physical device/emulator in sandbox → install-on-device not tested here; packaging verified via aapt/apksigner + the embedded web app is the same E2E-tested code.
 - Next: push to GitHub once user provides token (fine-grained, Contents read+write); tag v1.0 triggers APK Release; optional signing secrets for signed CI APKs.
+
+---
+Task ID: 7
+Agent: orchestrator (Z.ai Code)
+Task: GitHub push + Release (user provided PAT via chat).
+
+Work Log:
+- Token received in chat; stored ONLY in /tmp file (chmod 600) — never in repo, logs, or git history. Validated via API (login: parkerhell07-eng).
+- Token scope check: has Contents (R/W) but NOT "Workflows" → direct git push of .github/workflows/* rejected; Contents API route also rejected ("Resource not accessible by personal access token").
+- Mitigation: moved workflow to docs/ci/build-apk.yml (committed), .github removed from tracking; docs/BUILD-APK.md documents two activation paths (web UI paste, or token with Workflows scope).
+- Pushed main → https://github.com/parkerhell07-eng/fiberoptic (public, empty repo user created).
+- Created Release v1.0 via API + uploaded BOTH APKs as assets (state=uploaded verified):
+  - fiberkar-v1.0-release.apk (5,191,073 B, sha256 b631d69f…) — signed
+  - fiberkar-v1.0-debug.apk (6,864,190 B, sha256 b3aa6be8…)
+- README: download links added at top. Repo description PATCH skipped (needs Administration scope).
+- Final docs/worklog commit pushed. /tmp token file deleted after use.
+
+Stage Summary:
+- Live deliverables: repo main + Release v1.0 with real signed APK:
+  https://github.com/parkerhell07-eng/fiberoptic/releases/tag/v1.0
+- Remaining (needs user action): activate CI by pasting docs/ci/build-apk.yml to .github/workflows/ via web UI, or grant "Workflows: R/W" on a new token. Optional signing Secrets for CI-signed builds.
+- Token hygiene: recommend user revoke/rotate the PAT now that push+release are done.

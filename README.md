@@ -5,6 +5,12 @@
 
 ![نسخه](https://img.shields.io/badge/نسخه-1.0.0-059669) ![حالت](https://img.shields.io/badge/داده‌ها-کاملاً%20محلی-059669) ![PWA](https://img.shields.io/badge/PWA-آماده%20نصب-059669)
 
+### 📲 دانلود APK اندروید (نسخه ۱٫۰ — امضاشده)
+
+**[دانلود از صفحه Releases](https://github.com/parkerhell07-eng/fiberoptic/releases/tag/v1.0)** —
+مستقیم: [`fiberkar-v1.0-release.apk`](https://github.com/parkerhell07-eng/fiberoptic/releases/download/v1.0/fiberkar-v1.0-release.apk)
+(پکیج `com.fiberkar.app` — Android 7+ — تنها مجوز INTERNET)
+
 ---
 
 ## ✨ امکانات

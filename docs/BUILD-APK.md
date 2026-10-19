@@ -10,19 +10,29 @@
 
 ---
 
-## روش ۱ — ساخت خودکار با GitHub Actions (توصیه‌شده)
+## روش ۱ — ساخت خودکار با GitHub Actions (نیازمند یک‌بار فعال‌سازی)
 
-1. مخزن را روی GitHub قرار دهید.
-2. به تب **Actions** بروید → ورک‌فلو **Build FiberKar Android APK** → **Run workflow**.
-   (یا یک تگ `v1.0` پوش کنید تا همزمان Release هم ساخته شود.)
-3. پس از پایان، از بخش **Artifacts** فایل APK را دانلود کنید:
-   - `fiberkar-debug-apk` → `app-debug.apk` — قابل نصب مستقیم برای تست.
-   - `fiberkar-release-apk-unsigned` → برای انتشار نیازمند امضا (بخش امضا در پایین).
-   - `fiberkar-release-apk-signed` → فقط اگر Secretهای امضا تنظیم شده باشند.
+فایل ورک‌فلو در مخزن موجود است: [`docs/ci/build-apk.yml`](../docs/ci/build-apk.yml).
+چون توکن فعلی مجوز `Workflows` ندارد، برای فعال‌سازی CI یکی از دو راه زیر:
+
+**الف) از طریق وب (ساده‌ترین):**
+1. در GitHub به `Add file → Create new file` بروید و مسیر `.github/workflows/build-apk.yml` را بسازید
+2. محتوای `docs/ci/build-apk.yml` را کپی و Paste کنید → Commit
+3. تب Actions → ورک‌فلو **Build FiberKar Android APK** → Run workflow (یا پوش تگ `v*` → Release خودکار)
+
+**ب) با توکن دارای مجوز:** توکن Fine-grained با مجوزهای `Contents` + `Workflows` (Read & write) بسازید؛
+سپس کافی است `cp docs/ci/build-apk.yml .github/workflows/build-apk.yml && git add . && git push`.
+
+پس از پایان اجرا، از بخش **Artifacts** فایل APK را دانلود کنید:
+- `fiberkar-debug-apk` → `app-debug.apk` — قابل نصب مستقیم برای تست
+- `fiberkar-release-apk-signed` → فقط اگر Secretهای امضا تنظیم شده باشند
 
 ورک‌فلو شامل این مراحل است: نصب وابستگی‌ها → lint → بیلد استاتیک Next.js
 (`bun run build:cap`) → `bunx cap sync android` → `gradlew assembleDebug/Release` →
 امضای اختیاری با Secretها → آپلود آرتیفکت / Release.
+
+> ℹ️ توجه: Release نسخه ۱٫۰ از قبل با APK **امضاشده محلی** منتشر شده است:
+> <https://github.com/parkerhell07-eng/fiberoptic/releases/tag/v1.0>
 
 ### امضای خودکار در CI (اختیاری)
 
