@@ -407,3 +407,22 @@ Work Log:
 Stage Summary:
 - v1.2.0 ready: phone-scale fixes (textZoom + safe-area insets), PDF table-gap fix + 2-col photo grid + orphan-title fix (pixel-verified), 42% smaller signed APK with hardened security profile.
 - On publish: push main, create Release v1.2.0 with the two local APKs (CI will also attach unsigned ones — delete those after run), tag triggers fixed CI.
+
+---
+Task ID: 13
+Agent: orchestrator (Z.ai Code)
+Task: Publish v1.2.0 with the user's new token (Task 12 fixes were already built, verified and committed locally as d60c739).
+
+Work Log:
+- Token received in chat; stored ONLY in /tmp/fk_gh.token (chmod 600); used solely via runtime credential-helper env injection and API headers; never written to any repo file/log/history (git log -S 'ghp_' clean across all refs).
+- Pre-publish re-verification after session restart: build env (JDK/SDK), keystore, and signed /tmp v1.2.0 APKs all survived; aapt (versionCode 4 / versionName 1.2.0 / INTERNET-only) + apksigner (v2+v3, cert SHA-256 26:69:E6:E8:... == v1.1.0 key -> in-place upgrade preserved) re-confirmed; only d60c739 unpushed (stale ahead-6 tracking reconciled via fetch).
+- Sandbox note: this session's tool harness kills background processes between calls (bare setsid insufficient; dev server died twice, incl. a stale .next Turbopack cache producing a bogus GET / 404). Working recipe: rm -rf .next + subshell-orphan `( setsid sh -c '... bun run dev' & )` -> server re-parented to PID 1 and survives across calls.
+- Pre-publish smoke E2E (agent-browser): RTL dashboard renders; create-project -> save (toast «با موفقیت ذخیره شد» + card) -> menu delete -> cascade confirm -> list empty; zero console/page errors; dev.log clean.
+- Added user-facing Play Protect install guidance to README (side-load scan warnings are normal; More details -> Install anyway; report-as-safe steps; cert SHA-256 verify anchor; download only from Releases) — commit e078be7.
+- Published: pushed main (c372b2a..e078be7); annotated tag v1.2.0 -> CI run 39338235153 (fixed pipeline, first real tag run) completed **success**; Release v1.2.0 created via API (id 417832935) with Persian notes; both signed APKs uploaded; public download sha256 byte-identical (release e7db26df...); deleted CI-attached confusing assets (app-release-unsigned.apk, app-debug.apk) — final assets: fiberkar-v1.2.0-release.apk (3,055,374 B) + fiberkar-v1.2.0-debug.apk (6,880,155 B).
+- Cleanup: token deleted from /tmp; release staging files removed from /home/z.
+
+Stage Summary:
+- LIVE: https://github.com/parkerhell07-eng/fiberoptic/releases/tag/v1.2.0 (signed, INTERNET-only, R8-hardened ~3MB). 1.1.0 users upgrade in place; 1.0/1.0.1 follow backup -> uninstall -> install -> restore.
+- CI validated end-to-end on a real tag push; future releases fully automated (CI still attaches an unsigned APK when signing secrets are unset — deleted manually here).
+- Reminder: user should keep an off-machine backup of keystore/fiberkar-release.keystore + passwords.
