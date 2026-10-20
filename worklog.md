@@ -469,3 +469,22 @@ Stage Summary:
 - v1.3.0 fully built & verified locally: consumables module (catalog+usage+report+CSV+PDF section), route/box richer entry (forms+details+PDF), in-app updater (native plugin + silent check + manual card), honest key-rotation migration docs.
 - Resilience: encrypted keystore committed to repo — sandbox resets can never again lose the signing key; password offline with user.
 - On publish (needs token): push main, tag v1.3.0, Release with Persian notes + both signed APKs, delete CI-attached unsigned assets, verify sha256 (same flow as v1.2.0).
+
+---
+Task ID: 14-publish
+Agent: orchestrator (Z.ai Code)
+Task: Publish v1.3.0 with the new token provided by the user (github_pat_ fine-grained PAT).
+
+Work Log:
+- Sandbox was reset again between sessions (JDK/SDK//tmp APKs gone) — resilience plan worked exactly as designed: decrypted keystore from committed keystore/fiberkar-release.keystore.enc (openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000, password FK-K3-2026#x9Vq2Lm5), verified alias fiberkar / pass fiberkar2025 / SHA-256 CE:01:87:08...:0C:46 (key #3, unchanged from the committed build).
+- Rebuilt toolchain from scratch: system OpenJDK lacked javac -> Temurin JDK 21 at /home/z/jdk; Android cmdline-tools + platform-tools + platforms;android-36 + build-tools;36.0.0 at /home/z/android-sdk; android/local.properties sdk.dir.
+- Rebuild: build:cap OK -> cap sync OK -> gradle assembleRelease (3,013,743 B) + assembleDebug (6,891,083 B). First gradle attempt died (daemon OOM-killed; dev server was eating RAM) -> killed dev server + daemon, retried clean, both targets OK.
+- Signed: zipalign -p 4 + apksigner (v2+v3) with decrypted keystore. Verified: versionCode 5 / versionName 1.3.0 / package com.fiberkar.app / permissions INTERNET + REQUEST_INSTALL_PACKAGES only / cert SHA-256 ce018708...048700c46. Release 3,063,566 B sha256 80be38d9...7c605, debug 6,891,083 B sha256 fa9572a9...65171 (new hashes vs previous-session build — zipalign/apksigner non-determinism, same key).
+- BUGFIX found pre-publish: README quoted a WRONG cert fingerprint for key #3 (diverged after byte 15). Fixed to the keytool+apksigner-verified value and committed (0947f18) BEFORE tagging, so users verify against the true anchor.
+- Publish: pushed main (d6a717d..0947f18) + annotated tag v1.3.0 -> CI run 39406121697 completed SUCCESS. softprops auto-created release 418261935 with junk assets; PATCHed title/body with Persian notes (/home/z/release_body.md), uploaded both signed APKs (server-side digests matched local), deleted junk app-debug.apk (658971689) + app-release-unsigned.apk (658971691) via API (204). Public download sha256 byte-identical (cmp clean).
+- Cleanup: token deleted from /tmp; staging files removed; dev server restarted via orphan-process recipe (HTTP 200).
+
+Stage Summary:
+- LIVE: https://github.com/parkerhell07-eng/fiberoptic/releases/tag/v1.3.0 — Persian notes, cert SHA-256 anchor, APK checksums, honest key-rotation migration path (backup -> uninstall -> install -> restore for 1.2 users) and in-place in-app updates promised from 1.3.1+ (updater ships in this build).
+- Final assets: fiberkar-v1.3.0-release.apk (3,063,566 B, sha256 80be38d90126858294e9714247218e43da6f800138bcce3abdc7773968c7c605) + fiberkar-v1.3.0-debug.apk (6,891,083 B, sha256 fa9572a9e21378b550964e6102e199136f6277b8e6d457bb77e4af09ed465171).
+- Reminder: user must keep an off-machine backup of the keystore (plain copy or .enc + password FK-K3-2026#x9Vq2Lm5) — losing it again means another key rotation and another manual uninstall/restore cycle.
