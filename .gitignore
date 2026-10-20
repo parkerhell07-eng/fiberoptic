@@ -58,8 +58,12 @@ server.log
 /download/*.apk
 /download/*.idsig
 /android/app/src/main/assets/public/
-# Keystore files must NEVER be committed
+# Keystore files must NEVER be committed (raw)
 *.keystore
 *.jks
+# BUT the AES-256-encrypted backup of the release keystore IS committed on purpose,
+# so a sandbox reset can never lose the signing key again. Decryption password is
+# kept offline by the project owner (NOT anywhere in this repository).
+!keystore/fiberkar-release.keystore.enc
 *.idsig
 tool-results/

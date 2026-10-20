@@ -6,7 +6,7 @@ import * as React from 'react'
 import { Download, Loader2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
-import { exportDropCablesCsv, exportOperationsCsv, exportPowerTestsCsv, type CsvKind } from '@/lib/csv'
+import { exportConsumablesCsv, exportDropCablesCsv, exportOperationsCsv, exportPowerTestsCsv, type CsvKind } from '@/lib/csv'
 import { saveBlobToDisk } from '@/lib/backup'
 import { sanitizeFileName } from '@/lib/native-bridge'
 import { todayISO } from '@/lib/persian'
@@ -20,7 +20,9 @@ export async function buildAndSaveCsv(kind: CsvKind, projectId?: string): Promis
       ? await exportOperationsCsv(projectId)
       : kind === 'drop-cables'
         ? await exportDropCablesCsv(projectId)
-        : await exportPowerTestsCsv(projectId)
+        : kind === 'consumables'
+          ? await exportConsumablesCsv(projectId)
+          : await exportPowerTestsCsv(projectId)
   const name = sanitizeFileName(`fiberkar-${kind}${projectId ? '' : '-همه'}-${todayISO()}.csv`, '.csv')
   const how = await saveBlobToDisk(blob, name)
   if (how === 'shared') {

@@ -1,6 +1,9 @@
 // فایبرکار — برچسب‌های فارسی (تمام متن‌های وضعیت و نوع در یک نقطه)
 import type {
   BoxStatus,
+  BoxType,
+  ConsumableCategory,
+  ConsumableUnit,
   DeliveryStatus,
   InstallMethod,
   InstallStatus,
@@ -38,6 +41,33 @@ export const boxStatusVariants: Record<BoxStatus, 'secondary' | 'default' | 'des
   installed: 'secondary',
   in_service: 'default',
   damaged: 'destructive',
+}
+
+export const boxTypeLabels: Record<BoxType, string> = {
+  dome: 'کپسولی (گنبدی)',
+  inline: 'انشعابی خطی',
+  wall: 'دیواری',
+  floor: 'کف‌خواب',
+  cabinet: 'اتاقک',
+  odf: 'ترمینال/ODF',
+  custom: 'سفارشی',
+}
+
+export const consumableCategoryLabels: Record<ConsumableCategory, string> = {
+  cable_fiber: 'کابل و فیبر',
+  connector: 'اتصالات (پیگتیل/آداپتور)',
+  protection: 'حفاظت فیوژن',
+  panel_terminal: 'کاست و ترمینال',
+  tools_materials: 'ابزار و مواد',
+  other: 'سایر',
+}
+
+export const consumableUnitLabels: Record<ConsumableUnit, string> = {
+  count: 'عدد',
+  meter: 'متر',
+  pack: 'بسته',
+  roll: 'رول',
+  box: 'جعبه',
 }
 
 export const operationTypeLabels: Record<OperationType, string> = {
@@ -133,6 +163,7 @@ export const viewTitles: Record<string, string> = {
   fusion: 'فیوژن',
   'power-tests': 'تست توان',
   'drop-cables': 'دراپ‌کابل',
+  consumables: 'لوازم مصرفی',
   photos: 'عکس‌ها',
   profiles: 'پروفایل و مشخصات کاری',
   reports: 'گزارش PDF',

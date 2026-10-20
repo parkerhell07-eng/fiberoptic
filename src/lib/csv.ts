@@ -3,13 +3,15 @@
 import { db } from './localdb'
 import { adaptiveNum, computeConsumed, formatJalali, toFa } from './persian'
 import {
+  consumableCategoryLabels,
+  consumableUnitLabels,
   deliveryStatusLabels,
   installMethodLabels,
   installStatusLabels,
   operationStatusLabels,
   operationTypeLabels,
 } from './labels'
-import type { Box, DropCable, Operation, PowerTest, Project, Route } from './types'
+import type { Box, ConsumableUsage, DropCable, Operation, PowerTest, Project, Route } from './types'
 
 /**
  * ساخت متن CSV:
@@ -204,5 +206,46 @@ export async function exportPowerTestsCsv(projectId?: string): Promise<Blob> {
   return csvBlob(toCsv(headers, rows))
 }
 
-// سه خروجی درخواستی: operations / drop-cables / power-tests
-export type CsvKind = 'operations' | 'drop-cables' | 'power-tests'
+// ================= لوازم مصرفی (ثبت‌های مصرف) =================
+
+export async function exportConsumablesCsv(projectId?: string): Promise<Blob> {
+  const [usages, items, lookups] = await Promise.all([
+    projectId ? db.consumableUsages.where('projectId').equals(projectId).toArray() : db.consumableUsages.toArray(),
+    db.consumableItems.toArray(),
+    loadLookups(),
+  ])
+  const itemById = new Map(items.map((i) => [i.id, i]))
+  const rows = usages
+    .sort((a, b) => a.createdAt - b.createdAt)
+    .map((u: ConsumableUsage) => {
+      const item = itemById.get(u.itemId)
+      return [
+        item?.name ?? 'قلم حذف‌شده',
+        item ? statusFa(consumableCategoryLabels, item.category) : '—',
+        item ? statusFa(consumableUnitLabels, item.unit) : '—',
+        adaptiveNum(u.quantity),
+        formatJalali(u.date),
+        u.projectId ? (lookups.projects.get(u.projectId) ?? '—') : '—',
+        u.routeId ? (lookups.routes.get(u.routeId) ?? '—') : '—',
+        u.boxId ? (lookups.boxes.get(u.boxId) ?? '—') : '—',
+        u.note || '—',
+        formatJalali(u.createdAt),
+      ]
+    })
+  const headers = [
+    'قلم',
+    'دسته',
+    'واحد',
+    'مقدار مصرف',
+    'تاریخ',
+    'پروژه',
+    'مسیر',
+    'باکس',
+    'توضیحات',
+    'تاریخ ثبت',
+  ]
+  return csvBlob(toCsv(headers, rows))
+}
+
+// چهار خروجی: operations / drop-cables / power-tests / consumables
+export type CsvKind = 'operations' | 'drop-cables' | 'power-tests' | 'consumables'

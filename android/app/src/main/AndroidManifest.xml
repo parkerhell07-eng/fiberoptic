@@ -33,4 +33,7 @@
     <!-- Permissions -->
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- به‌روزرسانی درون‌برنامه‌ای: باز کردن نصب‌کنندهٔ اندروید روی APK دانلودشده از
+         Releases همین مخزن (امضای ثابت → به‌روزرسانی درجا با حفظ داده) -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 </manifest>

@@ -78,6 +78,7 @@ import {
 import {
   boxStatusLabels,
   boxStatusVariants,
+  boxTypeLabels,
   messages,
   operationStatusLabels,
   operationStatusVariants,
@@ -85,8 +86,8 @@ import {
   projectStatusLabels,
   projectStatusVariants,
 } from '@/lib/labels'
-import { formatJalali, formatJalaliDateTime, formatMeters, toFa } from '@/lib/persian'
-import type { Box, BoxStatus, Profile, Project, ProjectStatus, Route } from '@/lib/types'
+import { formatJalali, formatJalaliDateTime, formatMeters, parseNumberInput, toFa } from '@/lib/persian'
+import type { Box, BoxStatus, BoxType, Profile, Project, ProjectStatus, Route } from '@/lib/types'
 
 // ---------- ابزار مشترک ----------
 function profileDisplayName(p: Profile): string {
@@ -302,7 +303,23 @@ function ProjectEditDialog({
 interface RouteFormValues {
   name: string
   code: string
+  cableType: string
+  fiberCount: string
+  lengthM: string
+  sourcePoint: string
+  destPoint: string
   description: string
+}
+
+const emptyRouteForm: RouteFormValues = {
+  name: '',
+  code: '',
+  cableType: '',
+  fiberCount: '',
+  lengthM: '',
+  sourcePoint: '',
+  destPoint: '',
+  description: '',
 }
 
 function RouteFormDialog({
@@ -316,13 +333,26 @@ function RouteFormDialog({
   projectId: string
   editing: Route | null
 }) {
-  const [form, setForm] = React.useState<RouteFormValues>({ name: '', code: '', description: '' })
+  const [form, setForm] = React.useState<RouteFormValues>(emptyRouteForm)
   const [error, setError] = React.useState<string | null>(null)
   const [saving, setSaving] = React.useState(false)
 
   React.useEffect(() => {
     if (open) {
-      setForm(editing ? { name: editing.name, code: editing.code, description: editing.description } : { name: '', code: '', description: '' })
+      setForm(
+        editing
+          ? {
+              name: editing.name,
+              code: editing.code,
+              cableType: editing.cableType ?? '',
+              fiberCount: editing.fiberCount !== undefined ? String(editing.fiberCount) : '',
+              lengthM: editing.lengthM !== undefined ? String(editing.lengthM) : '',
+              sourcePoint: editing.sourcePoint ?? '',
+              destPoint: editing.destPoint ?? '',
+              description: editing.description,
+            }
+          : emptyRouteForm
+      )
       setError(null)
     }
   }, [open, editing])
@@ -338,6 +368,11 @@ function RouteFormDialog({
         projectId,
         name: form.name.trim(),
         code: form.code.trim(),
+        cableType: form.cableType.trim(),
+        fiberCount: parseNumberInput(form.fiberCount),
+        lengthM: parseNumberInput(form.lengthM),
+        sourcePoint: form.sourcePoint.trim(),
+        destPoint: form.destPoint.trim(),
         description: form.description.trim(),
       }
       if (editing) {
@@ -388,6 +423,52 @@ function RouteFormDialog({
               dir="ltr"
             />
           </Field>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="مبدأ" hint="اختیاری">
+              <Input
+                value={form.sourcePoint}
+                onChange={(e) => setForm((f) => ({ ...f, sourcePoint: e.target.value }))}
+                placeholder="مثلاً مرکز مخابرات"
+                className="min-h-11"
+              />
+            </Field>
+            <Field label="مقصد" hint="اختیاری">
+              <Input
+                value={form.destPoint}
+                onChange={(e) => setForm((f) => ({ ...f, destPoint: e.target.value }))}
+                placeholder="مثلاً باکس انتهای مسیر"
+                className="min-h-11"
+              />
+            </Field>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="نوع کابل مسیر" hint="اختیاری">
+              <Input
+                value={form.cableType}
+                onChange={(e) => setForm((f) => ({ ...f, cableType: e.target.value }))}
+                placeholder="مثلاً ۲۴ کور ترانک"
+                className="min-h-11"
+              />
+            </Field>
+            <Field label="تعداد فیبر/کور" hint="اختیاری">
+              <Input
+                value={form.fiberCount}
+                onChange={(e) => setForm((f) => ({ ...f, fiberCount: e.target.value }))}
+                placeholder="مثلاً ۲۴"
+                className="min-h-11"
+                inputMode="numeric"
+              />
+            </Field>
+          </div>
+          <Field label="متراژ مسیر" hint="اختیاری — متر">
+            <Input
+              value={form.lengthM}
+              onChange={(e) => setForm((f) => ({ ...f, lengthM: e.target.value }))}
+              placeholder="مثلاً ۱۲۰۰"
+              className="min-h-11"
+              inputMode="decimal"
+            />
+          </Field>
           <Field label="توضیحات">
             <Textarea
               value={form.description}
@@ -417,6 +498,10 @@ interface BoxFormValues {
   location: string
   cableSpec: string
   capacity: string
+  boxType: BoxType
+  customBoxTypeLabel: string
+  brand: string
+  model: string
   status: BoxStatus
   routeId: string
   description: string
@@ -442,6 +527,10 @@ function BoxFormDialog({
     location: '',
     cableSpec: '',
     capacity: '',
+    boxType: 'dome',
+    customBoxTypeLabel: '',
+    brand: '',
+    model: '',
     status: 'not_installed',
     routeId: defaultRouteId ?? '',
     description: '',
@@ -458,6 +547,10 @@ function BoxFormDialog({
               location: editing.location,
               cableSpec: editing.cableSpec,
               capacity: editing.capacity,
+              boxType: editing.boxType ?? 'dome',
+              customBoxTypeLabel: editing.customBoxTypeLabel ?? '',
+              brand: editing.brand ?? '',
+              model: editing.model ?? '',
               status: editing.status,
               routeId: editing.routeId,
               description: editing.description,
@@ -467,6 +560,10 @@ function BoxFormDialog({
               location: '',
               cableSpec: '',
               capacity: '',
+              boxType: 'dome',
+              customBoxTypeLabel: '',
+              brand: '',
+              model: '',
               status: 'not_installed',
               routeId: defaultRouteId ?? '',
               description: '',
@@ -491,6 +588,10 @@ function BoxFormDialog({
         location: form.location.trim(),
         cableSpec: form.cableSpec.trim(),
         capacity: form.capacity.trim(),
+        boxType: form.boxType,
+        customBoxTypeLabel: form.boxType === 'custom' ? form.customBoxTypeLabel.trim() : '',
+        brand: form.brand.trim(),
+        model: form.model.trim(),
         status: form.status,
         description: form.description.trim(),
       }
@@ -570,6 +671,49 @@ function BoxFormDialog({
               value={form.capacity}
               onChange={(e) => setForm((f) => ({ ...f, capacity: e.target.value }))}
               placeholder="مثلاً 1x8"
+              className="min-h-11"
+              dir="ltr"
+            />
+          </Field>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="نوع باکس" hint="اختیاری">
+              <Select value={form.boxType} onValueChange={(v) => setForm((f) => ({ ...f, boxType: v as BoxType }))}>
+                <SelectTrigger className="min-h-11 w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent dir="rtl">
+                  {(Object.entries(boxTypeLabels) as Array<[BoxType, string]>).map(([value, label]) => (
+                    <SelectItem key={value} value={value}>
+                      {label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </Field>
+            <Field label="برند" hint="اختیاری">
+              <Input
+                value={form.brand}
+                onChange={(e) => setForm((f) => ({ ...f, brand: e.target.value }))}
+                placeholder="مثلاً آرین پلی‌مر"
+                className="min-h-11"
+              />
+            </Field>
+          </div>
+          {form.boxType === 'custom' ? (
+            <Field label="عنوان نوع سفارشی" required>
+              <Input
+                value={form.customBoxTypeLabel}
+                onChange={(e) => setForm((f) => ({ ...f, customBoxTypeLabel: e.target.value }))}
+                placeholder="مثلاً باکس پلاریتی ۹۶ کور"
+                className="min-h-11"
+              />
+            </Field>
+          ) : null}
+          <Field label="مدل" hint="اختیاری">
+            <Input
+              value={form.model}
+              onChange={(e) => setForm((f) => ({ ...f, model: e.target.value }))}
+              placeholder="مثلاً AK-96C"
               className="min-h-11"
               dir="ltr"
             />

@@ -15,10 +15,12 @@
 //    html2canvas-pro کل سند را برای هر صفحه کلون می‌کند).
 import { jsPDF } from 'jspdf'
 import html2canvas from 'html2canvas-pro'
-import type { Box, DropCable, Fusion, Operation, Photo, PowerTest, Profile, Project, Route } from './types'
+import type { Box, ConsumableUsage, DropCable, Fusion, Operation, Photo, PowerTest, Profile, Project, Route } from './types'
 import { db, getPhotoBlob } from './localdb'
 import {
   boxStatusLabels,
+  boxTypeLabels,
+  consumableUnitLabels,
   deliveryStatusLabels,
   installMethodLabels,
   installStatusLabels,
@@ -48,6 +50,7 @@ export interface ReportSections {
   fusions: boolean
   powerTests: boolean
   dropCables: boolean
+  consumables: boolean
   photos: boolean
 }
 
@@ -81,6 +84,7 @@ export const defaultSections: ReportSections = {
   fusions: true,
   powerTests: true,
   dropCables: true,
+  consumables: true,
   photos: true,
 }
 
@@ -278,6 +282,8 @@ interface ReportData {
   profiles: Profile[]
   routeNameById: Map<string, string>
   boxLabelById: Map<string, string>
+  consumableUsages: ConsumableUsage[] // ثبت‌های مصرف لینک‌شده به این پروژه (v1.3)
+  consumableItemsById: Map<string, import('./types').ConsumableItem>
 }
 
 async function buildBlocks(
@@ -371,7 +377,7 @@ async function buildBlocks(
     )
   }
 
-  // مسیرها — در حالت خلاصه ستون «—» بدون داده حذف می‌شود (M3)
+  // مسیرها — در حالت خلاصه ستون «—» بدون داده حذف می‌شود (M3) — v1.3: مبدأ/مقصد/کابل/متراژ
   if (show.routes) {
     blocks.push(sectionTitle('مسیرهای شبکه', routes.length))
     if (routes.length === 0) {
@@ -379,16 +385,27 @@ async function buildBlocks(
     } else if (full) {
       dataTableBlocks(
         'routes',
-        ['نام مسیر', 'کد', 'توضیحات'],
-        [32, 20, 48],
-        routes.map((r) => [dash(r.name), dash(r.code), dash(r.description)])
+        ['نام مسیر', 'کد', 'مبدأ → مقصد', 'کابل / فیبر', 'متراژ', 'توضیحات'],
+        [18, 10, 20, 16, 10, 26],
+        routes.map((r) => [
+          dash(r.name),
+          dash(r.code),
+          dash([r.sourcePoint, r.destPoint].filter((x) => !!x?.trim()).join(' → ')),
+          dash(
+            [r.cableType, r.fiberCount !== undefined ? `${toFa(r.fiberCount)} کور` : null]
+              .filter(Boolean)
+              .join(' • ')
+          ),
+          r.lengthM !== undefined ? formatMeters(r.lengthM) : '—',
+          dash(r.description),
+        ])
       )
     } else {
       dataTableBlocks(
         'routes',
-        ['نام مسیر', 'کد'],
-        [62, 38],
-        routes.map((r) => [dash(r.name), dash(r.code)])
+        ['نام مسیر', 'کد', 'متراژ'],
+        [50, 26, 24],
+        routes.map((r) => [dash(r.name), dash(r.code), r.lengthM !== undefined ? formatMeters(r.lengthM) : '—'])
       )
     }
   }
@@ -402,13 +419,15 @@ async function buildBlocks(
       if (full) {
         dataTableBlocks(
           'boxes',
-          ['شماره باکس', 'مسیر', 'محل نصب', 'ظرفیت', 'مشخصات کابل', 'وضعیت', 'توضیحات'],
-          [11, 15, 18, 10, 19, 9, 18],
+          ['شماره باکس', 'مسیر', 'نوع', 'محل نصب', 'ظرفیت', 'برند / مدل', 'مشخصات کابل', 'وضعیت', 'توضیحات'],
+          [9, 12, 11, 14, 8, 12, 16, 8, 10],
           boxes.map((b: Box) => [
             dash(b.number),
             routeCell(b.routeId),
+            b.boxType === 'custom' && b.customBoxTypeLabel ? dash(b.customBoxTypeLabel) : b.boxType ? boxTypeLabels[b.boxType] : '—',
             dash(b.location),
             dash(b.capacity), // M5: ظرفیت
+            dash([b.brand, b.model].filter((x) => !!x?.trim()).join(' ')),
             dash(b.cableSpec),
             boxStatusLabels[b.status],
             dash(b.description),
@@ -619,6 +638,66 @@ async function buildBlocks(
     }
   }
 
+  // لوازم مصرفی — فقط ثبت‌های لینک‌شده به این پروژه (v1.3)
+  // حالت خلاصه: مجموع به‌تفکیک قلم — حالت کامل: همهٔ ثبت‌ها با محل مصرف
+  if (show.consumables) {
+    const usages = data.consumableUsages
+    blocks.push(sectionTitle('لوازم مصرفی مصرف‌شده', usages.length))
+    if (usages.length === 0) {
+      blocks.push(emptyHint('مصرف لوازم مصرفی برای این پروژه ثبت نشده است.'))
+    } else {
+      const itemLabel = (itemId: string): string => {
+        const it = data.consumableItemsById.get(itemId)
+        return it ? esc(it.name) : 'قلم حذف‌شده'
+      }
+      const itemUnit = (itemId: string): string => {
+        const it = data.consumableItemsById.get(itemId)
+        return it ? consumableUnitLabels[it.unit] : '—'
+      }
+      if (full) {
+        dataTableBlocks(
+          'consumables',
+          ['قلم', 'واحد', 'مقدار', 'مسیر / باکس', 'تاریخ', 'توضیحات'],
+          [22, 8, 10, 24, 12, 24],
+          usages.map((u) => [
+            itemLabel(u.itemId),
+            itemUnit(u.itemId),
+            adaptiveNum(u.quantity),
+            ctxCell(u.routeId, u.boxId),
+            formatJalali(u.date),
+            dash(u.note),
+          ])
+        )
+        // مجموع به‌تفکیک قلم برای دید مدیریتی
+        const totals = new Map<string, number>()
+        for (const u of usages) totals.set(u.itemId, (totals.get(u.itemId) ?? 0) + u.quantity)
+        const totalRows = [...totals.entries()]
+          .sort((a, b) => data.consumableItemsById.get(a[0])?.name.localeCompare(data.consumableItemsById.get(b[0])?.name ?? '', 'fa') ?? 0)
+          .map(([itemId, qty]) => [itemLabel(itemId), itemUnit(itemId), adaptiveNum(qty)])
+        blocks.push(sectionTitle('مجموع مصرف به‌تفکیک قلم'))
+        dataTableBlocks(
+          'consumablesTotal',
+          ['قلم', 'واحد', 'مجموع مصرف'],
+          [50, 20, 30],
+          totalRows
+        )
+      } else {
+        const totals = new Map<string, number>()
+        for (const u of usages) totals.set(u.itemId, (totals.get(u.itemId) ?? 0) + u.quantity)
+        const totalRows = [...totals.entries()]
+          .sort((a, b) => data.consumableItemsById.get(a[0])?.name.localeCompare(data.consumableItemsById.get(b[0])?.name ?? '', 'fa') ?? 0)
+          .map(([itemId, qty]) => [itemLabel(itemId), itemUnit(itemId), adaptiveNum(qty)])
+        dataTableBlocks(
+          'consumablesTotal',
+          ['قلم', 'واحد', 'مجموع مصرف'],
+          [50, 20, 30],
+          totalRows
+        )
+        blocks.push(note('برای دید جزئیات هر ثبت (محل مصرف، تاریخ و توضیحات) حالت «کامل» را انتخاب کنید.'))
+      }
+    }
+  }
+
   // عکس‌ها — یک عکس خراب هرگز کل گزارش را نمی‌کشد؛ فاز پیشرفت واقعی (M1)
   if (show.photos) {
     const linked = !!opts.photoIds && opts.photoIds.length > 0
@@ -765,7 +844,7 @@ export async function generateProjectReport(opts: ReportOptions): Promise<Genera
   const project = await db.projects.get(opts.projectId)
   if (!project) throw new Error('پروژه یافت نشد')
 
-  const [routes, boxes, operations, fusions, powerTests, dropCables, allPhotos, profiles] = await Promise.all([
+  const [routes, boxes, operations, fusions, powerTests, dropCables, allPhotos, profiles, consumableUsages, consumableItems] = await Promise.all([
     db.routes.where('projectId').equals(project.id).filter((r) => !r.archived).toArray(),
     db.boxes.where('projectId').equals(project.id).filter((b) => !b.archived).toArray(),
     db.operations.where('projectId').equals(project.id).toArray(),
@@ -774,6 +853,8 @@ export async function generateProjectReport(opts: ReportOptions): Promise<Genera
     db.dropCables.where('projectId').equals(project.id).toArray(),
     db.photos.where('projectId').equals(project.id).toArray(),
     db.profiles.toArray(),
+    db.consumableUsages.where('projectId').equals(project.id).toArray(),
+    db.consumableItems.toArray(),
   ])
 
   // ----- مرتب‌سازی واقعی داده‌ها (H3) -----
@@ -794,6 +875,8 @@ export async function generateProjectReport(opts: ReportOptions): Promise<Genera
   fusions.sort((a, b) => a.createdAt - b.createdAt)
   powerTests.sort((a, b) => a.createdAt - b.createdAt)
   dropCables.sort((a, b) => a.createdAt - b.createdAt)
+  // ثبت‌های مصرف: بر اساس تاریخ مصرف، بعد زمان ثبت
+  consumableUsages.sort((a, b) => (a.date === b.date ? a.createdAt - b.createdAt : a.date.localeCompare(b.date)))
 
   // ----- عکس‌های گزارش: اول مرتب‌سازی، بعد برش (H2) -----
   let photos: Photo[] = []
@@ -826,6 +909,8 @@ export async function generateProjectReport(opts: ReportOptions): Promise<Genera
     profiles,
     routeNameById,
     boxLabelById,
+    consumableUsages,
+    consumableItemsById: new Map(consumableItems.map((it) => [it.id, it])),
   }
   const { blocks, headerOf } = await buildBlocks(opts, data)
 

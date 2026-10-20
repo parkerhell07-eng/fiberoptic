@@ -29,6 +29,11 @@ export interface Route {
   projectId: ID
   name: string
   code: string
+  cableType: string // نوع کابل مسیر (مثل 24 کور ترانک) — v1.3
+  fiberCount?: number // تعداد فیبر/کور — v1.3
+  lengthM?: number // متراژ مسیر (متر) — v1.3
+  sourcePoint: string // مبدأ — v1.3
+  destPoint: string // مقصد — v1.3
   description: string
   archived: 0 | 1
   createdAt: number
@@ -37,6 +42,7 @@ export interface Route {
 
 // ================= باکس =================
 export type BoxStatus = 'not_installed' | 'installed' | 'in_service' | 'damaged'
+export type BoxType = 'dome' | 'inline' | 'wall' | 'floor' | 'cabinet' | 'odf' | 'custom'
 
 export interface Box {
   id: ID
@@ -46,6 +52,10 @@ export interface Box {
   location: string // محل نصب
   cableSpec: string // مشخصات کابل
   capacity: string // ظرفیت (مثلاً 1x8) — اختیاری
+  boxType?: BoxType // نوع باکس — v1.3 (رکوردهای قدیمی بدون این فیلد)
+  customBoxTypeLabel?: string // عنوان نوع سفارشی
+  brand: string // برند — v1.3
+  model: string // مدل — v1.3
   status: BoxStatus
   description: string
   archived: 0 | 1
@@ -233,6 +243,42 @@ export interface PhotoBlobRow {
   blob: Blob // اصل عکس (فشرده‌شده) — فضای اختصاصی اپ (IndexedDB)
 }
 
+// ================= لوازم مصرفی =================
+export type ConsumableCategory =
+  | 'cable_fiber'
+  | 'connector'
+  | 'protection'
+  | 'panel_terminal'
+  | 'tools_materials'
+  | 'other'
+
+export type ConsumableUnit = 'count' | 'meter' | 'pack' | 'roll' | 'box'
+
+/** قلم لوازم مصرفی (کاتالوگ) — v1.3 */
+export interface ConsumableItem {
+  id: ID
+  name: string
+  category: ConsumableCategory
+  unit: ConsumableUnit
+  note: string
+  createdAt: number
+  updatedAt: number
+}
+
+/** ثبت مصرف یک قلم — لینک اختیاری به پروژه/مسیر/باکس — v1.3 */
+export interface ConsumableUsage {
+  id: ID
+  itemId: ID
+  quantity: number
+  date: string // 'YYYY-MM-DD'
+  projectId?: ID
+  routeId?: ID
+  boxId?: ID
+  note: string
+  createdAt: number
+  updatedAt: number
+}
+
 // ================= تنظیمات =================
 export interface SettingEntry {
   key: string
@@ -266,6 +312,8 @@ export const BACKUP_TABLES = [
   'profiles',
   'photos',
   'photoBlobs',
+  'consumableItems',
+  'consumableUsages',
 ] as const
 
 export type BackupTableName = (typeof BACKUP_TABLES)[number]

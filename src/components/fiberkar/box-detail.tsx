@@ -52,6 +52,7 @@ import {
 import {
   boxStatusLabels,
   boxStatusVariants,
+  boxTypeLabels,
   installStatusLabels,
   installStatusVariants,
   messages,
@@ -60,7 +61,7 @@ import {
   operationTypeLabels,
 } from '@/lib/labels'
 import { formatJalali, formatJalaliDateTime, formatNum, toFa } from '@/lib/persian'
-import type { Box, BoxStatus, Project, Route } from '@/lib/types'
+import type { Box, BoxStatus, BoxType, Project, Route } from '@/lib/types'
 
 function CenterSpinner() {
   return (
@@ -76,6 +77,10 @@ interface BoxFormValues {
   location: string
   cableSpec: string
   capacity: string
+  boxType: BoxType
+  customBoxTypeLabel: string
+  brand: string
+  model: string
   status: BoxStatus
   routeId: string
   description: string
@@ -100,6 +105,10 @@ function BoxFormDialog({
     location: '',
     cableSpec: '',
     capacity: '',
+    boxType: 'dome',
+    customBoxTypeLabel: '',
+    brand: '',
+    model: '',
     status: 'not_installed',
     routeId: '',
     description: '',
@@ -114,6 +123,10 @@ function BoxFormDialog({
       location: editing.location,
       cableSpec: editing.cableSpec,
       capacity: editing.capacity,
+      boxType: editing.boxType ?? 'dome',
+      customBoxTypeLabel: editing.customBoxTypeLabel ?? '',
+      brand: editing.brand ?? '',
+      model: editing.model ?? '',
       status: editing.status,
       routeId: editing.routeId,
       description: editing.description,
@@ -137,6 +150,10 @@ function BoxFormDialog({
         location: form.location.trim(),
         cableSpec: form.cableSpec.trim(),
         capacity: form.capacity.trim(),
+        boxType: form.boxType,
+        customBoxTypeLabel: form.boxType === 'custom' ? form.customBoxTypeLabel.trim() : '',
+        brand: form.brand.trim(),
+        model: form.model.trim(),
         status: form.status,
         description: form.description.trim(),
       }
@@ -207,6 +224,47 @@ function BoxFormDialog({
             <Input
               value={form.capacity}
               onChange={(e) => setForm((f) => ({ ...f, capacity: e.target.value }))}
+              className="min-h-11"
+              dir="ltr"
+            />
+          </Field>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="نوع باکس" hint="اختیاری">
+              <Select value={form.boxType} onValueChange={(v) => setForm((f) => ({ ...f, boxType: v as BoxType }))}>
+                <SelectTrigger className="min-h-11 w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent dir="rtl">
+                  {(Object.entries(boxTypeLabels) as Array<[BoxType, string]>).map(([value, label]) => (
+                    <SelectItem key={value} value={value}>
+                      {label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </Field>
+            <Field label="برند" hint="اختیاری">
+              <Input
+                value={form.brand}
+                onChange={(e) => setForm((f) => ({ ...f, brand: e.target.value }))}
+                className="min-h-11"
+              />
+            </Field>
+          </div>
+          {form.boxType === 'custom' ? (
+            <Field label="عنوان نوع سفارشی" required>
+              <Input
+                value={form.customBoxTypeLabel}
+                onChange={(e) => setForm((f) => ({ ...f, customBoxTypeLabel: e.target.value }))}
+                placeholder="مثلاً باکس پلاریتی ۹۶ کور"
+                className="min-h-11"
+              />
+            </Field>
+          ) : null}
+          <Field label="مدل" hint="اختیاری">
+            <Input
+              value={form.model}
+              onChange={(e) => setForm((f) => ({ ...f, model: e.target.value }))}
               className="min-h-11"
               dir="ltr"
             />
@@ -414,6 +472,18 @@ export default function BoxDetailView() {
         />
         <InfoRow label="محل نصب" value={box.location || '—'} />
         <InfoRow label="ظرفیت" value={box.capacity ? toFa(box.capacity) : '—'} />
+        <InfoRow
+          label="نوع باکس"
+          value={
+            box.boxType === 'custom' && box.customBoxTypeLabel
+              ? box.customBoxTypeLabel
+              : box.boxType
+                ? boxTypeLabels[box.boxType]
+                : '—'
+          }
+        />
+        <InfoRow label="برند" value={box.brand || '—'} />
+        <InfoRow label="مدل" value={box.model || '—'} />
         <InfoRow label="مشخصات کابل" value={box.cableSpec || '—'} />
         <InfoRow label="مسیر" value={route?.name ?? '—'} />
         <InfoRow label="پروژه" value={project?.name ?? '—'} />

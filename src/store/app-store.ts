@@ -20,6 +20,7 @@ export type ViewKey =
   | 'fusion'
   | 'power-tests'
   | 'drop-cables'
+  | 'consumables'
   | 'photos'
   | 'profiles'
   | 'reports'
@@ -52,7 +53,7 @@ interface AppState {
 
 const VALID_VIEWS: ViewKey[] = [
   'dashboard', 'projects', 'project', 'route', 'box', 'operations', 'fusion',
-  'power-tests', 'drop-cables', 'photos', 'profiles', 'reports', 'backup', 'search',
+  'power-tests', 'drop-cables', 'consumables', 'photos', 'profiles', 'reports', 'backup', 'search',
 ]
 
 const INTENT_KEYS = ['intent'] as const

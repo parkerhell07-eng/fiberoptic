@@ -47,6 +47,7 @@ const sectionItems: Array<{ key: keyof ReportSections; label: string }> = [
   { key: 'fusions', label: 'فیوژن' },
   { key: 'powerTests', label: 'تست توان' },
   { key: 'dropCables', label: 'دراپ‌کابل' },
+  { key: 'consumables', label: 'لوازم مصرفی' },
   { key: 'photos', label: 'تصاویر' },
 ]
 

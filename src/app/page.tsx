@@ -14,6 +14,7 @@ import {
   Image as ImageIcon,
   Menu,
   Moon,
+  Package,
   Search,
   ShieldCheck,
   Sun,
@@ -32,6 +33,8 @@ import OperationsView from '@/components/fiberkar/operations-view'
 import FusionView from '@/components/fiberkar/fusion-view'
 import PowerTestsView from '@/components/fiberkar/power-tests-view'
 import DropCablesView from '@/components/fiberkar/drop-cables-view'
+import ConsumablesView from '@/components/fiberkar/consumables-view'
+import UpdateChecker, { silentUpdateCheck } from '@/components/fiberkar/update-checker'
 import PhotosView from '@/components/fiberkar/photos-view'
 import ProfilesView from '@/components/fiberkar/profiles-view'
 import ReportsView from '@/components/fiberkar/reports-view'
@@ -48,6 +51,7 @@ const VIEW_COMPONENTS: Record<ViewKey, React.ComponentType> = {
   fusion: FusionView,
   'power-tests': PowerTestsView,
   'drop-cables': DropCablesView,
+  consumables: ConsumablesView,
   photos: PhotosView,
   profiles: ProfilesView,
   reports: ReportsView,
@@ -68,6 +72,11 @@ export default function Home() {
 
   useEffect(() => {
     return installHashSync()
+  }, [])
+
+  useEffect(() => {
+    // بررسی خاموش به‌روزرسانی (فقط اپ اندروید؛ حداکثر روزی یک‌بار)
+    void silentUpdateCheck()
   }, [])
 
   useEffect(() => {
@@ -120,7 +129,8 @@ export default function Home() {
 
   const View = VIEW_COMPONENTS[view] ?? DashboardView
   const toggleTheme = () => setTheme(resolvedTheme === 'dark' ? 'light' : 'dark')
-  const moreActive = view === 'photos' || view === 'profiles' || view === 'reports' || view === 'backup' || view === 'search'
+  const moreActive =
+    view === 'consumables' || view === 'photos' || view === 'profiles' || view === 'reports' || view === 'backup' || view === 'search'
 
   return (
     <div
@@ -184,7 +194,7 @@ export default function Home() {
       {/* فوتر چسبان به پایین */}
       <footer className="mt-auto border-t bg-muted/40 pb-[calc(env(safe-area-inset-bottom)+5.5rem)] pt-3">
         <div className="mx-auto flex w-full max-w-3xl flex-wrap items-center justify-center gap-x-4 gap-y-1 px-4 text-xs text-muted-foreground">
-          <span>فیبرکار نسخه ۱٫۲</span>
+          <span>فیبرکار نسخه ۱٫۳</span>
           <span className="flex items-center gap-1">
             <WifiOff className="size-3.5" />
             کاملاً آفلاین — داده‌ها فقط روی همین دستگاه
@@ -269,7 +279,15 @@ function BottomMoreMenu({ navigate, active }: { navigate: (v: ViewKey) => void; 
         <SheetHeader>
           <SheetTitle>بیشتر</SheetTitle>
         </SheetHeader>
-        <nav className="grid grid-cols-4 gap-2 pb-6" aria-label="منوی بیشتر">
+        <nav className="grid grid-cols-4 gap-2 pb-4" aria-label="منوی بیشتر">
+          <MoreItem
+            icon={<Package className="size-5" />}
+            label="لوازم مصرفی"
+            onClick={() => {
+              navigate('consumables')
+              setOpen(false)
+            }}
+          />
           <MoreItem
             icon={<ImageIcon className="size-5" />}
             label="عکس‌ها"
@@ -311,6 +329,9 @@ function BottomMoreMenu({ navigate, active }: { navigate: (v: ViewKey) => void; 
             }}
           />
         </nav>
+        <div className="pb-6">
+          <UpdateChecker />
+        </div>
       </SheetContent>
     </Sheet>
   )

@@ -7,6 +7,8 @@
 import Dexie, { type Table, type Transaction, type UpdateSpec } from 'dexie'
 import type {
   Box,
+  ConsumableItem,
+  ConsumableUsage,
   ConsumedResult,
   DropCable,
   Fusion,
@@ -46,6 +48,8 @@ export class FiberDB extends Dexie {
   profiles!: Table<Profile, string>
   photos!: Table<Photo, string>
   photoBlobs!: Table<PhotoBlobRow, string>
+  consumableItems!: Table<ConsumableItem, string>
+  consumableUsages!: Table<ConsumableUsage, string>
   settings!: Table<{ key: string; value: unknown }, string>
 
   constructor() {
@@ -83,6 +87,15 @@ export class FiberDB extends Dexie {
         if (blobRows.length > 0) await blobsTable.bulkPut(blobRows)
         if (all.length > 0) await photosTable.bulkPut(all as Photo[])
       })
+    this.version(3).stores({
+      // لوازم مصرفی (v1.3) — بدون تغییر ساختار جدول‌های قبلی
+      consumableItems: 'id, name, category, createdAt',
+      consumableUsages: 'id, itemId, projectId, routeId, boxId, date, createdAt',
+    })
+    // بار اول: اقلام پیش‌فرض لوازم مصرفی (پیگتیل، آداپتور و...) — idempotent
+    this.on('ready', () => {
+      ensureConsumableSeed().catch(() => {})
+    })
   }
 }
 
@@ -158,7 +171,7 @@ export async function setProjectPinned(id: string, pinned: 0 | 1): Promise<void>
 export async function deleteProjectCascade(id: string): Promise<void> {
   await db.transaction(
     'rw',
-    [db.projects, db.routes, db.boxes, db.operations, db.fusions, db.powerTests, db.dropCables, db.photos, db.photoBlobs],
+    [db.projects, db.routes, db.boxes, db.operations, db.fusions, db.powerTests, db.dropCables, db.photos, db.photoBlobs, db.consumableUsages],
     async () => {
       // حذف عکس‌ها بر اساس هر هفت لینک (اطمینان از نبود عکس یتیم حتی با لینک مندرس)
       const routeIds = (await db.routes.where('projectId').equals(id).toArray()).map((r) => r.id)
@@ -185,6 +198,7 @@ export async function deleteProjectCascade(id: string): Promise<void> {
       await db.powerTests.where('projectId').equals(id).delete()
       await db.fusions.where('projectId').equals(id).delete()
       await db.operations.where('projectId').equals(id).delete()
+      await db.consumableUsages.where('projectId').equals(id).delete()
       await db.boxes.where('projectId').equals(id).delete()
       await db.routes.where('projectId').equals(id).delete()
       await db.projects.delete(id)
@@ -212,7 +226,7 @@ export async function setRouteArchived(id: string, archived: 0 | 1): Promise<voi
 export async function deleteRouteCascade(id: string): Promise<void> {
   await db.transaction(
     'rw',
-    [db.routes, db.boxes, db.operations, db.fusions, db.powerTests, db.dropCables, db.photos, db.photoBlobs],
+    [db.routes, db.boxes, db.operations, db.fusions, db.powerTests, db.dropCables, db.photos, db.photoBlobs, db.consumableUsages],
     async () => {
       const boxIds = (await db.boxes.where('routeId').equals(id).toArray()).map((b) => b.id)
       const opIds = (await db.operations.where('routeId').equals(id).toArray()).map((o) => o.id)
@@ -236,6 +250,7 @@ export async function deleteRouteCascade(id: string): Promise<void> {
       await db.powerTests.where('routeId').equals(id).delete()
       await db.fusions.where('routeId').equals(id).delete()
       await db.operations.where('routeId').equals(id).delete()
+      await db.consumableUsages.where('routeId').equals(id).delete()
       await db.boxes.where('routeId').equals(id).delete()
       await db.routes.delete(id)
     }
@@ -267,7 +282,7 @@ export async function setBoxArchived(id: string, archived: 0 | 1): Promise<void>
 }
 
 export async function deleteBoxCascade(id: string): Promise<void> {
-  await db.transaction('rw', [db.boxes, db.operations, db.fusions, db.powerTests, db.dropCables, db.photos, db.photoBlobs], async () => {
+  await db.transaction('rw', [db.boxes, db.operations, db.fusions, db.powerTests, db.dropCables, db.photos, db.photoBlobs, db.consumableUsages], async () => {
     const opIds = (await db.operations.where('boxId').equals(id).toArray()).map((o) => o.id)
     const fusionIds = (await db.fusions.where('boxId').equals(id).toArray()).map((f) => f.id)
     const ptIds = (await db.powerTests.where('boxId').equals(id).toArray()).map((p) => p.id)
@@ -286,6 +301,7 @@ export async function deleteBoxCascade(id: string): Promise<void> {
     await db.powerTests.where('boxId').equals(id).delete()
     await db.fusions.where('boxId').equals(id).delete()
     await db.operations.where('boxId').equals(id).delete()
+    await db.consumableUsages.where('boxId').equals(id).delete()
     await db.boxes.delete(id)
   })
 }
@@ -312,8 +328,9 @@ export async function updateOperation(id: string, patch: Partial<Operation>): Pr
 }
 
 export async function deleteOperationCascade(id: string): Promise<void> {
-  await db.transaction('rw', [db.operations, db.photos, db.photoBlobs], async () => {
+  await db.transaction('rw', [db.operations, db.photos, db.photoBlobs, db.consumableUsages], async () => {
     await deletePhotosByLink('operationId', id)
+    await db.consumableUsages.where('operationId').equals(id).delete()
     await db.operations.delete(id)
   })
 }
@@ -432,6 +449,84 @@ export function profileSnapshot(p: Profile, customRoleLabel?: string): { name: s
 function roleKeyLabel(role?: string): string {
   const found = Object.entries(profileRoleLabels).find(([k]) => k === role)
   return found ? found[1] : role || '—'
+}
+
+// ---------- لوازم مصرفی (v1.3) ----------
+export type ConsumableItemInput = Omit<ConsumableItem, 'id' | 'createdAt' | 'updatedAt'>
+export async function createConsumableItem(input: ConsumableItemInput): Promise<ConsumableItem> {
+  const t = nowMs()
+  const rec: ConsumableItem = { ...input, id: uid(), createdAt: t, updatedAt: t }
+  await db.consumableItems.add(rec)
+  return rec
+}
+
+export async function updateConsumableItem(id: string, patch: Partial<ConsumableItem>): Promise<void> {
+  await updateStrict(db.consumableItems, id, { ...patch, updatedAt: nowMs() }, 'قلم لوازم مصرفی')
+}
+
+/** حذف قلم + همه ثبت‌های مصرف آن (در یک تراکنش) */
+export async function deleteConsumableItemCascade(id: string): Promise<void> {
+  await db.transaction('rw', [db.consumableItems, db.consumableUsages], async () => {
+    await db.consumableUsages.where('itemId').equals(id).delete()
+    await db.consumableItems.delete(id)
+  })
+}
+
+export type ConsumableUsageInput = Omit<ConsumableUsage, 'id' | 'createdAt' | 'updatedAt'>
+export async function createConsumableUsage(input: ConsumableUsageInput): Promise<ConsumableUsage> {
+  const t = nowMs()
+  const rec: ConsumableUsage = { ...input, id: uid(), createdAt: t, updatedAt: t }
+  await db.consumableUsages.add(rec)
+  return rec
+}
+
+export async function updateConsumableUsage(id: string, patch: Partial<ConsumableUsage>): Promise<void> {
+  await updateStrict(db.consumableUsages, id, { ...patch, updatedAt: nowMs() }, 'ثبت مصرف')
+}
+
+export async function deleteConsumableUsage(id: string): Promise<void> {
+  const exists = await db.consumableUsages.get(id)
+  if (!exists) throw new RecordNotFoundError('ثبت مصرف')
+  await db.consumableUsages.delete(id)
+}
+
+/** اقلام پیش‌فرض کاتالوگ — فقط بار اول (فلاگ در settings؛ idempotent) */
+const CONSUMABLE_SEED_FLAG = 'consumableSeedV1'
+async function ensureConsumableSeed(): Promise<void> {
+  const done = await db.settings.get(CONSUMABLE_SEED_FLAG)
+  if (done) return
+  const count = await db.consumableItems.count()
+  if (count === 0) {
+    const now = nowMs()
+    const seedDefaults: Array<Omit<ConsumableItem, 'id' | 'createdAt' | 'updatedAt'>> = [
+      { name: 'پیگتیل SC', category: 'connector', unit: 'count', note: 'پیگتیل تک‌مود SC/UPC' },
+      { name: 'پیگتیل LC', category: 'connector', unit: 'count', note: 'پیگتیل تک‌مود LC/UPC' },
+      { name: 'آداپتور SC', category: 'connector', unit: 'count', note: 'آداپتور ساده/دابل SC' },
+      { name: 'آداپتور LC', category: 'connector', unit: 'count', note: '' },
+      { name: 'کانکتور فست (Fast Connector)', category: 'connector', unit: 'count', note: '' },
+      { name: 'لوله فیوژن (اسلیو ۶۰ میلی‌متری)', category: 'protection', unit: 'count', note: '' },
+      { name: 'فیش محافظ کانکتور', category: 'protection', unit: 'count', note: '' },
+      { name: 'کاست فیبر ۱۲ پورت', category: 'panel_terminal', unit: 'count', note: '' },
+      { name: 'ترمینال فیبر (ODF دیواری)', category: 'panel_terminal', unit: 'count', note: '' },
+      { name: 'اسپلیسر 1x8', category: 'panel_terminal', unit: 'count', note: 'پلاریتی‌دار' },
+      { name: 'دراپ‌کابل تک‌کور', category: 'cable_fiber', unit: 'meter', note: '' },
+      { name: 'کابل فیبر (ترانک)', category: 'cable_fiber', unit: 'meter', note: 'هوایی/زمینی' },
+      { name: 'پچ‌کورد', category: 'cable_fiber', unit: 'count', note: '' },
+      { name: 'بست و یراق نصب', category: 'tools_materials', unit: 'pack', note: '' },
+      { name: 'داکت و کانال کابل', category: 'tools_materials', unit: 'meter', note: '' },
+      { name: 'برچسب و نوار علائم', category: 'tools_materials', unit: 'roll', note: '' },
+      { name: 'الکل و دستمال تمیزکاری فیبر', category: 'tools_materials', unit: 'pack', note: '' },
+      { name: 'سایر لوازم مصرفی', category: 'other', unit: 'count', note: '' },
+    ]
+    const defaults: ConsumableItem[] = seedDefaults.map((d, i) => ({
+      ...d,
+      id: `seed-item-${i + 1}`,
+      createdAt: now,
+      updatedAt: now,
+    }))
+    await db.consumableItems.bulkAdd(defaults)
+  }
+  await db.settings.put({ key: CONSUMABLE_SEED_FLAG, value: true })
 }
 
 // ---------- عکس ----------
@@ -615,7 +710,7 @@ export async function getProjectStats(projectId: string): Promise<ProjectStats> 
 export async function resetAllData(): Promise<void> {
   await db.transaction(
     'rw',
-    [db.projects, db.routes, db.boxes, db.operations, db.fusions, db.powerTests, db.dropCables, db.profiles, db.photos, db.photoBlobs],
+    [db.projects, db.routes, db.boxes, db.operations, db.fusions, db.powerTests, db.dropCables, db.profiles, db.photos, db.photoBlobs, db.consumableItems, db.consumableUsages],
     async () => {
       await Promise.all([
         db.projects.clear(),
@@ -628,6 +723,8 @@ export async function resetAllData(): Promise<void> {
         db.profiles.clear(),
         db.photos.clear(),
         db.photoBlobs.clear(),
+        db.consumableItems.clear(),
+        db.consumableUsages.clear(),
       ])
     }
   )
