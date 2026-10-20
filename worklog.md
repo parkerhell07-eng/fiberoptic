@@ -510,3 +510,21 @@ Work Log:
 Stage Summary:
 - v1.3.1 fully built, signed and E2E-verified locally; three feedback items addressed (toast position, in-operation consumable recording, category completeness).
 - Publish needs only the user's next token; from 1.3.0 devices the update arrives in-app (same signature).
+
+---
+Task ID: 15-publish
+Agent: orchestrator (Z.ai Code)
+Task: Publish v1.3.1 with the token provided in this message (ghp_ classic PAT, repo+workflow).
+
+Work Log:
+- Sandbox was reset again (JDK/SDK/keystore//tmp APKs gone) — resilience plan reran exactly: Temurin JDK 21 (/home/z/jdk) + cmdline-tools/platform-tools/android-36/build-tools 36.0.0 (/home/z/android-sdk) + keystore decrypted from committed .enc (SHA-256 verified ce018708...0c46, key #3).
+- Rebuilt v1.3.1 from committed afb06f9: build:cap OK -> cap sync OK -> gradle assembleRelease+assembleDebug (no OOM this time, 4m29s) -> zipalign + apksigner v2+v3. Verified: com.fiberkar.app, versionCode 6 / 1.3.1, perms INTERNET+REQUEST_INSTALL_PACKAGES(+auto DYNAMIC_RECEIVER), cert SHA-256 ce018708...0c46 (same key as 1.3.0 -> in-place update valid). Artifacts staged /tmp: release 3,063,566 B sha256 016d4cf9..., debug 6,942,956 B sha256 4fa4ecd6... (fresh-build hashes differ from prev-session build; zipalign/apksigner non-determinism, same key).
+- Pre-push browser E2E re-run on dev server (fresh profile): toasts render at bottom (bottomFromVh=64px, clears 56px nav), operation form shows «مواد مصرفشده» rows (item select + Persian qty), project create (client name REQUIRED — inline validation, no toast), operation create with بست نیلونی x۵۰ -> card line «مواد مصرفشده: بست نیلونی (سیمبند) ۵۰ بسته», consumables «ثبت مصرف» tab shows auto-created usage linked to project+operation, new seed items (هیتشرینک/کلمپ ورودی باکس/بست نیلونی) present in catalog, zero console/page errors. Note: dialog stays open after CREATE by design (switches to edit mode for immediate photo attach).
+- Publish: pushed main (7d0521c..afb06f9) + annotated tag v1.3.1 -> CI run 39426143369 SUCCESS (~4 min). PATCHed auto-release 418403213 title/body (Persian notes /home/z/release_body.md). Uploaded both signed APKs — server digests matched local sha256. Deleted CI junk app-debug.apk (659344211) + app-release-unsigned.apk (659344214) -> 204.
+- GOTCHA for next publishes: single-asset REST route is /releases/assets/{id} (NO release id in path). /releases/{rid}/assets/{id} returns 404 for GET and DELETE — cost a few confused minutes this round.
+- Verified public anonymous download byte-identical (cmp clean both APKs). Token deleted from /tmp; history grep clean.
+
+Stage Summary:
+- LIVE: https://github.com/parkerhell07-eng/fiberoptic/releases/tag/v1.3.1 — Persian notes, cert anchor, both signed APKs only.
+- Final assets: fiberkar-v1.3.1-release.apk (3,063,566 B, sha256 016d4cf9e8532f38b6671ef7e3a9469f94050eebc1d0ff32752b422f1dc08726) + fiberkar-v1.3.1-debug.apk (6,942,956 B, sha256 4fa4ecd638b11ee99e564529cd62fd4c1adbc7a30de98186f3b8b5a8b37ecca8).
+- 1.3.0 users get this in-place (same signature); in-app updater can serve it. Reminder: user keeps off-machine keystore backup (.enc + FK-K3-2026#x9Vq2Lm5).
