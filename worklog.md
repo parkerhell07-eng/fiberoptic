@@ -488,3 +488,25 @@ Stage Summary:
 - LIVE: https://github.com/parkerhell07-eng/fiberoptic/releases/tag/v1.3.0 — Persian notes, cert SHA-256 anchor, APK checksums, honest key-rotation migration path (backup -> uninstall -> install -> restore for 1.2 users) and in-place in-app updates promised from 1.3.1+ (updater ships in this build).
 - Final assets: fiberkar-v1.3.0-release.apk (3,063,566 B, sha256 80be38d90126858294e9714247218e43da6f800138bcce3abdc7773968c7c605) + fiberkar-v1.3.0-debug.apk (6,891,083 B, sha256 fa9572a9e21378b550964e6102e199136f6277b8e6d457bb77e4af09ed465171).
 - Reminder: user must keep an off-machine backup of the keystore (plain copy or .enc + password FK-K3-2026#x9Vq2Lm5) — losing it again means another key rotation and another manual uninstall/restore cycle.
+
+---
+Task ID: 15
+Agent: orchestrator (Z.ai Code)
+Task: v1.3.1 — user feedback round: (1) toasts showing at top of screen "not correct", (2) consumables must be recordable inside the operation flow (box/cable preparation), (3) complete the categories so the app is self-sufficient. Built locally; NOT published (no token in this message).
+
+Work Log:
+- Toast fix: layout.tsx sonner Toaster position top-center -> bottom-center with offset "calc(64px + env(safe-area-inset-bottom))" + mobileOffset — clears the 56px bottom nav, respects APK safe-area (viewportFit cover). Browser-verified geometry: toast bottom edge exactly 64px above viewport bottom.
+- Data model: ConsumableUsage += operationId (types.ts); Dexie version(4) adds operationId index to consumableUsages (this ALSO fixes a latent bug: deleteOperationCascade already ran .where('operationId') on a NON-indexed field since v1.3.0 — would throw SchemaError on every operation deletion); updateOperation now propagates date/project/route/box patches to linked usages (mirrors photo-sync behavior).
+- New helper replaceOperationConsumables(op, rows): transactional sync of an operation's usages (delete + bulkAdd; date/parents inherited from the operation).
+- Seed v2 (flag consumableSeedV2, name-dedup, applies to existing installs): 9 new defaults + 2 new categories box_prep «آماده‌سازی باکس و کابل» and sealing «آب‌بندی و عایق» — هیت‌شرینک، کلمپ/بست ورودی باکس، پرچ و پیچ، فیش داخل‌رو، ژل آب‌بندی، کپسول رزین، نوار سیلیکون، بست نیلونی، بافته تمیزکاری. Catalog now 27 items.
+- operations-view: form section «مواد مصرف‌شده (اختیاری)» — dynamic rows (item select from catalog + Persian-decimal qty + remove), add-row button, validation (empty row ignored; item-without-qty/qty<=0 blocked with toast), save path syncs rows on create AND update (created-state dialog keeps working); OperationCard shows live «مواد مصرف‌شده: …» summary line via useLiveQuery.
+- consumables-view: usage dialog gains cascading عملیات select (project -> route -> box -> operations filtered, NONE sentinel, resets on parent change); usage card subtitle shows operation title; renders in both ثبت and گزارش tabs.
+- pdf.ts full-mode consumables rows: column renamed «مسیر / باکس / عملیات», appends «عملیات: <title>» via operations map; csv.ts exportConsumablesCsv gains «عملیات» column (headers + row).
+- Gates: tsc 0 errors, eslint 0, agent-browser E2E green (fresh profile): project create -> operation create with 2 material rows (پیگتیل SC x12, لوله فیوژن x4) -> card summary renders -> consumables view shows auto-created usages with operation title -> standalone usage (کلمپ x6) linked to operation via new select -> PDF summary + full modes generate clean (preview iframe opened, zero console/page errors) -> toast measured at 64px from bottom.
+- Build: versionCode 6 / versionName 1.3.1; build:cap + cap sync + gradle assembleRelease (3,015,995 B unsigned) + assembleDebug (6,893,887 B); zipalign + apksigner (same key #3, cert SHA-256 ce018708...048700c46 — in-place upgrade from 1.3.0 valid, first release where the in-app updater can do its job). aapt verify: package com.fiberkar.app, perms INTERNET + REQUEST_INSTALL_PACKAGES. Artifacts /tmp/fiberkar-v1.3.1-{release,debug}.apk — release sha256 e618d80b1e3dfa31584a24022beac2e19b9c90ef39bf62de45213f6ee9e9d612, debug dc50fb90f2b8786bd2a12054946b1768fd2d20d1dca1e79ce3f3dfae01ff7212.
+- README: badge/links 1.3.1 + تازه‌های ۱٫۳٫۱ + honest upgrade note (1.3.0 -> 1.3.1 in-place via updater; 1.2 -> 1.3 still backup/uninstall/restore) + footer نسخه ۱٫۳٫۱.
+- NOT pushed, NO release — user message did not include a token; publish flow ready (same as v1.2.0/v1.3.0: push main + tag v1.3.1 -> CI -> release Persian notes + signed APKs -> delete CI junk assets -> verify sha256).
+
+Stage Summary:
+- v1.3.1 fully built, signed and E2E-verified locally; three feedback items addressed (toast position, in-operation consumable recording, category completeness).
+- Publish needs only the user's next token; from 1.3.0 devices the update arrives in-app (same signature).

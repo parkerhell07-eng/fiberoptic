@@ -655,15 +655,22 @@ async function buildBlocks(
         return it ? consumableUnitLabels[it.unit] : '—'
       }
       if (full) {
+        // عملیات لینک‌شدهٔ هر ثبت (v1.3.1) — نمایش محل مصرف در سطح عملیات
+        const opById = new Map(data.operations.map((o) => [o.id, o]))
         dataTableBlocks(
           'consumables',
-          ['قلم', 'واحد', 'مقدار', 'مسیر / باکس', 'تاریخ', 'توضیحات'],
+          ['قلم', 'واحد', 'مقدار', 'مسیر / باکس / عملیات', 'تاریخ', 'توضیحات'],
           [22, 8, 10, 24, 12, 24],
           usages.map((u) => [
             itemLabel(u.itemId),
             itemUnit(u.itemId),
             adaptiveNum(u.quantity),
-            ctxCell(u.routeId, u.boxId),
+            [
+              ctxCell(u.routeId, u.boxId),
+              u.operationId ? `عملیات: ${esc(opById.get(u.operationId)?.title ?? '—')}` : '',
+            ]
+              .filter(Boolean)
+              .join(' — '),
             formatJalali(u.date),
             dash(u.note),
           ])

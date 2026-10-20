@@ -209,12 +209,14 @@ export async function exportPowerTestsCsv(projectId?: string): Promise<Blob> {
 // ================= لوازم مصرفی (ثبت‌های مصرف) =================
 
 export async function exportConsumablesCsv(projectId?: string): Promise<Blob> {
-  const [usages, items, lookups] = await Promise.all([
+  const [usages, items, lookups, operations] = await Promise.all([
     projectId ? db.consumableUsages.where('projectId').equals(projectId).toArray() : db.consumableUsages.toArray(),
     db.consumableItems.toArray(),
     loadLookups(),
+    db.operations.toArray(),
   ])
   const itemById = new Map(items.map((i) => [i.id, i]))
+  const opById = new Map(operations.map((o) => [o.id, o]))
   const rows = usages
     .sort((a, b) => a.createdAt - b.createdAt)
     .map((u: ConsumableUsage) => {
@@ -228,6 +230,7 @@ export async function exportConsumablesCsv(projectId?: string): Promise<Blob> {
         u.projectId ? (lookups.projects.get(u.projectId) ?? '—') : '—',
         u.routeId ? (lookups.routes.get(u.routeId) ?? '—') : '—',
         u.boxId ? (lookups.boxes.get(u.boxId) ?? '—') : '—',
+        u.operationId ? (opById.get(u.operationId)?.title ?? '—') : '—',
         u.note || '—',
         formatJalali(u.createdAt),
       ]
@@ -241,6 +244,7 @@ export async function exportConsumablesCsv(projectId?: string): Promise<Blob> {
     'پروژه',
     'مسیر',
     'باکس',
+    'عملیات',
     'توضیحات',
     'تاریخ ثبت',
   ]

@@ -92,9 +92,15 @@ export class FiberDB extends Dexie {
       consumableItems: 'id, name, category, createdAt',
       consumableUsages: 'id, itemId, projectId, routeId, boxId, date, createdAt',
     })
+    this.version(4).stores({
+      // v1.3.1 — ثبت مصرف از داخل فرم عملیات (ایندکس operationId)
+      consumableUsages: 'id, itemId, projectId, routeId, boxId, operationId, date, createdAt',
+    })
     // بار اول: اقلام پیش‌فرض لوازم مصرفی (پیگتیل، آداپتور و...) — idempotent
     this.on('ready', () => {
-      ensureConsumableSeed().catch(() => {})
+      ensureConsumableSeed()
+        .then(() => ensureConsumableSeedV2())
+        .catch(() => {})
     })
   }
 }
@@ -325,6 +331,15 @@ export async function updateOperation(id: string, patch: Partial<Operation>): Pr
     if (patch.boxId !== undefined) photoPatch.boxId = patch.boxId
     await db.photos.where('operationId').equals(id).modify(photoPatch)
   }
+  // هم‌زمانی مصرف‌های ثبت‌شده از این عملیات (تاریخ/والدین) — v1.3.1
+  if (patch.date !== undefined || patch.projectId !== undefined || patch.routeId !== undefined || patch.boxId !== undefined) {
+    const usagePatch: Partial<ConsumableUsage> = {}
+    if (patch.date !== undefined) usagePatch.date = patch.date
+    if (patch.projectId !== undefined) usagePatch.projectId = patch.projectId
+    if (patch.routeId !== undefined) usagePatch.routeId = patch.routeId
+    if (patch.boxId !== undefined) usagePatch.boxId = patch.boxId
+    await db.consumableUsages.where('operationId').equals(id).modify(usagePatch)
+  }
 }
 
 export async function deleteOperationCascade(id: string): Promise<void> {
@@ -490,6 +505,39 @@ export async function deleteConsumableUsage(id: string): Promise<void> {
   await db.consumableUsages.delete(id)
 }
 
+// ---------- ثبت مواد مصرفی از داخل فرم عملیات (v1.3.1) ----------
+export interface OperationConsumableRow {
+  itemId: string
+  quantity: number
+}
+
+/**
+ * همگام‌سازی مصرف‌های یک عملیات با ردیف‌های فرم (در یک تراکنش):
+ * مصرف‌های قبلیِ همان عملیات حذف و مجموعهٔ جدید ثبت می‌شود —
+ * تاریخ/والدین از خود عملیات برمی‌دارد تا همیشه هم‌راستا باشند.
+ */
+export async function replaceOperationConsumables(op: Pick<Operation, 'id' | 'date' | 'projectId' | 'routeId' | 'boxId'>, rows: OperationConsumableRow[]): Promise<void> {
+  await db.transaction('rw', db.consumableUsages, async () => {
+    await db.consumableUsages.where('operationId').equals(op.id).delete()
+    if (rows.length === 0) return
+    const t = nowMs()
+    const recs: ConsumableUsage[] = rows.map((r) => ({
+      id: uid(),
+      itemId: r.itemId,
+      quantity: r.quantity,
+      date: op.date,
+      projectId: op.projectId,
+      routeId: op.routeId,
+      boxId: op.boxId,
+      operationId: op.id,
+      note: '',
+      createdAt: t,
+      updatedAt: t,
+    }))
+    await db.consumableUsages.bulkAdd(recs)
+  })
+}
+
 /** اقلام پیش‌فرض کاتالوگ — فقط بار اول (فلاگ در settings؛ idempotent) */
 const CONSUMABLE_SEED_FLAG = 'consumableSeedV1'
 async function ensureConsumableSeed(): Promise<void> {
@@ -527,6 +575,40 @@ async function ensureConsumableSeed(): Promise<void> {
     await db.consumableItems.bulkAdd(defaults)
   }
   await db.settings.put({ key: CONSUMABLE_SEED_FLAG, value: true })
+}
+
+/**
+ * اقلام پیش‌فرض مکمل (v1.3.1) — دسته‌های «آماده‌سازی باکس و کابل» و «آب‌بندی و عایق»
+ * برای نصب‌های قبلی هم اضافه می‌شود (با چک نام؛ تکراری نمی‌سازد).
+ */
+const CONSUMABLE_SEED_FLAG_V2 = 'consumableSeedV2'
+async function ensureConsumableSeedV2(): Promise<void> {
+  const done = await db.settings.get(CONSUMABLE_SEED_FLAG_V2)
+  if (done) return
+  const existing = new Set((await db.consumableItems.toArray()).map((i) => i.name))
+  const additions: Array<Omit<ConsumableItem, 'id' | 'createdAt' | 'updatedAt'>> = [
+    { name: 'لوله حرارتی (هیت‌شرینک)', category: 'box_prep', unit: 'count', note: 'آب‌بندی محل اتصال و سرکابل' },
+    { name: 'کلمپ و بست کابل ورودی باکس', category: 'box_prep', unit: 'count', note: '' },
+    { name: 'پرچ و پیچ نصب باکس', category: 'box_prep', unit: 'pack', note: '' },
+    { name: 'فیش داخل‌رو (فیش آزاد)', category: 'connector', unit: 'count', note: 'برای سرهم‌کردن کابل در باکس' },
+    { name: 'ژل آب‌بندی باکس', category: 'sealing', unit: 'count', note: '' },
+    { name: 'کپسول رزین آب‌بندی', category: 'sealing', unit: 'count', note: '' },
+    { name: 'نوار سیلیکون آب‌بندی', category: 'sealing', unit: 'roll', note: '' },
+    { name: 'بست نیلونی (سیم‌بند)', category: 'tools_materials', unit: 'pack', note: '' },
+    { name: 'بافته تمیزکاری فیبر (بدون کرک)', category: 'tools_materials', unit: 'pack', note: '' },
+  ]
+  const fresh = additions.filter((a) => !existing.has(a.name))
+  if (fresh.length > 0) {
+    const now = nowMs()
+    const recs: ConsumableItem[] = fresh.map((d, i) => ({
+      ...d,
+      id: `seed-item-v2-${i + 1}`,
+      createdAt: now,
+      updatedAt: now,
+    }))
+    await db.consumableItems.bulkAdd(recs)
+  }
+  await db.settings.put({ key: CONSUMABLE_SEED_FLAG_V2, value: true })
 }
 
 // ---------- عکس ----------

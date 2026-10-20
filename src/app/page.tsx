@@ -194,7 +194,7 @@ export default function Home() {
       {/* فوتر چسبان به پایین */}
       <footer className="mt-auto border-t bg-muted/40 pb-[calc(env(safe-area-inset-bottom)+5.5rem)] pt-3">
         <div className="mx-auto flex w-full max-w-3xl flex-wrap items-center justify-center gap-x-4 gap-y-1 px-4 text-xs text-muted-foreground">
-          <span>فیبرکار نسخه ۱٫۳</span>
+          <span>فیبرکار نسخه ۱٫۳٫۱</span>
           <span className="flex items-center gap-1">
             <WifiOff className="size-3.5" />
             کاملاً آفلاین — داده‌ها فقط روی همین دستگاه

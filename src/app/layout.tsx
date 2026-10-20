@@ -47,7 +47,15 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
         <ThemeProvider attribute="class" defaultTheme="system" enableSystem disableTransitionOnChange>
           {children}
         </ThemeProvider>
-        <Toaster dir="rtl" position="top-center" richColors closeButton />
+        {/* پیام‌ها پایین صفحه (بالای نویگیشن) — جای طبیعی اعلان در اپ موبایل */}
+        <Toaster
+          dir="rtl"
+          position="bottom-center"
+          offset="calc(64px + env(safe-area-inset-bottom))"
+          mobileOffset="calc(64px + env(safe-area-inset-bottom))"
+          richColors
+          closeButton
+        />
       </body>
     </html>
   )

@@ -58,6 +58,8 @@ export const consumableCategoryLabels: Record<ConsumableCategory, string> = {
   connector: 'اتصالات (پیگتیل/آداپتور)',
   protection: 'حفاظت فیوژن',
   panel_terminal: 'کاست و ترمینال',
+  box_prep: 'آماده‌سازی باکس و کابل',
+  sealing: 'آب‌بندی و عایق',
   tools_materials: 'ابزار و مواد',
   other: 'سایر',
 }

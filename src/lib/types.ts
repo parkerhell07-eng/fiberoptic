@@ -249,6 +249,8 @@ export type ConsumableCategory =
   | 'connector'
   | 'protection'
   | 'panel_terminal'
+  | 'box_prep' // آماده‌سازی باکس و کابل — v1.3.1
+  | 'sealing' // آب‌بندی و عایق — v1.3.1
   | 'tools_materials'
   | 'other'
 
@@ -265,7 +267,7 @@ export interface ConsumableItem {
   updatedAt: number
 }
 
-/** ثبت مصرف یک قلم — لینک اختیاری به پروژه/مسیر/باکس — v1.3 */
+/** ثبت مصرف یک قلم — لینک اختیاری به پروژه/مسیر/باکس/عملیات — v1.3 */
 export interface ConsumableUsage {
   id: ID
   itemId: ID
@@ -274,6 +276,7 @@ export interface ConsumableUsage {
   projectId?: ID
   routeId?: ID
   boxId?: ID
+  operationId?: ID // ثبت از داخل فرم عملیات — v1.3.1
   note: string
   createdAt: number
   updatedAt: number

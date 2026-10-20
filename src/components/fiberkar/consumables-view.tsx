@@ -52,13 +52,14 @@ import {
   todayISO,
   validateMeterage,
 } from '@/lib/persian'
-import { consumableCategoryLabels, consumableUnitLabels, messages } from '@/lib/labels'
+import { consumableCategoryLabels, consumableUnitLabels, messages, operationTypeLabels } from '@/lib/labels'
 import type {
   Box,
   ConsumableCategory,
   ConsumableItem,
   ConsumableUnit,
   ConsumableUsage,
+  Operation,
   Project,
   Route,
 } from '@/lib/types'
@@ -113,16 +114,19 @@ export default function ConsumablesView() {
   const allProjects = useLiveQuery(() => db.projects.toArray(), [])
   const allRoutes = useLiveQuery(() => db.routes.toArray(), [])
   const allBoxes = useLiveQuery(() => db.boxes.toArray(), [])
+  const allOperations = useLiveQuery(() => db.operations.toArray(), [])
 
   // برای سلکت‌های فرم فقط رکوردهای غیرآرشیو؛ برای نمایش تاریخچه همه (حتی آرشیو) استفاده می‌شود
   const projects = React.useMemo(() => (allProjects ?? []).filter((p) => !p.archived), [allProjects])
   const routes = React.useMemo(() => (allRoutes ?? []).filter((r) => !r.archived), [allRoutes])
   const boxes = React.useMemo(() => (allBoxes ?? []).filter((b) => !b.archived), [allBoxes])
+  const operations = React.useMemo(() => allOperations ?? [], [allOperations])
 
   const itemMap = React.useMemo(() => new Map((items ?? []).map((it) => [it.id, it])), [items])
   const projectMap = React.useMemo(() => new Map((allProjects ?? []).map((p) => [p.id, p])), [allProjects])
   const routeMap = React.useMemo(() => new Map((allRoutes ?? []).map((r) => [r.id, r])), [allRoutes])
   const boxMap = React.useMemo(() => new Map((allBoxes ?? []).map((b) => [b.id, b])), [allBoxes])
+  const operationMap = React.useMemo(() => new Map((allOperations ?? []).map((o) => [o.id, o])), [allOperations])
 
   // ---------- تب فعال و فیلترها ----------
   const [tab, setTab] = React.useState('items')
@@ -215,6 +219,7 @@ export default function ConsumablesView() {
       u.projectId ? (projectMap.get(u.projectId)?.name ?? '') : '',
       u.routeId ? (routeMap.get(u.routeId)?.name ?? '') : '',
       box ? `باکس ${toFa(box.number)}` : '',
+      u.operationId ? (operationMap.get(u.operationId)?.title ?? '') : '',
       u.note || '',
     ].filter(Boolean)
     return (
@@ -475,6 +480,7 @@ export default function ConsumablesView() {
         projects={projects}
         routes={routes}
         boxes={boxes}
+        operations={operations}
         onClose={() => {
           setUsageFormOpen(false)
           setEditingUsage(null)
@@ -682,11 +688,12 @@ interface ConsumableUsageFormValues {
   projectId: string
   routeId: string
   boxId: string
+  operationId: string
   note: string
 }
 
 function defaultUsageFormValues(): ConsumableUsageFormValues {
-  return { itemId: '', quantity: '', date: todayISO(), projectId: '', routeId: '', boxId: '', note: '' }
+  return { itemId: '', quantity: '', date: todayISO(), projectId: '', routeId: '', boxId: '', operationId: '', note: '' }
 }
 
 function usageFormValuesFromRecord(u: ConsumableUsage): ConsumableUsageFormValues {
@@ -697,6 +704,7 @@ function usageFormValuesFromRecord(u: ConsumableUsage): ConsumableUsageFormValue
     projectId: u.projectId ?? '',
     routeId: u.routeId ?? '',
     boxId: u.boxId ?? '',
+    operationId: u.operationId ?? '',
     note: u.note,
   }
 }
@@ -708,6 +716,7 @@ function ConsumableUsageFormDialog({
   projects,
   routes,
   boxes,
+  operations,
   onClose,
 }: {
   open: boolean
@@ -716,6 +725,7 @@ function ConsumableUsageFormDialog({
   projects: Project[]
   routes: Route[]
   boxes: Box[]
+  operations: Operation[]
   onClose: () => void
 }) {
   const [values, setValues] = React.useState<ConsumableUsageFormValues>(() => defaultUsageFormValues())
@@ -734,11 +744,22 @@ function ConsumableUsageFormDialog({
   }
 
   // سلکت‌های آبشاری: مسیر وابسته به پروژه، باکس وابسته به پروژه (+مسیر در صورت انتخاب)
+  // عملیات هم آبشاری است: پروژه ← مسیر ← باکس (هرچه محدودتر انتخاب شود، عملیات‌های همان محدوده)
   const formRoutes = React.useMemo(() => routes.filter((r) => r.projectId === values.projectId), [routes, values.projectId])
   const formBoxes = React.useMemo(
     () =>
       boxes.filter((b) => b.projectId === values.projectId && (!values.routeId || b.routeId === values.routeId)),
     [boxes, values.projectId, values.routeId]
+  )
+  const formOperations = React.useMemo(
+    () =>
+      operations.filter(
+        (o) =>
+          (!values.projectId || o.projectId === values.projectId) &&
+          (!values.routeId || !o.routeId || o.routeId === values.routeId) &&
+          (!values.boxId || !o.boxId || o.boxId === values.boxId)
+      ),
+    [operations, values.projectId, values.routeId, values.boxId]
   )
   const selectedItem = React.useMemo(() => items.find((it) => it.id === values.itemId), [items, values.itemId])
 
@@ -770,6 +791,7 @@ function ConsumableUsageFormDialog({
       projectId: values.projectId || undefined,
       routeId: values.routeId || undefined,
       boxId: values.boxId || undefined,
+      operationId: values.operationId || undefined,
       note: values.note.trim(),
     }
 
@@ -801,7 +823,7 @@ function ConsumableUsageFormDialog({
         <DialogHeader className="gap-1 border-b p-4 text-right">
           <DialogTitle className="text-base">{editing ? 'ویرایش ثبت مصرف' : 'ثبت مصرف جدید'}</DialogTitle>
           <DialogDescription className="text-xs">
-            قلم، مقدار و تاریخ مصرف را وارد کنید؛ لینک به پروژه/مسیر/باکس اختیاری است
+            قلم، مقدار و تاریخ مصرف را وارد کنید؛ لینک به پروژه/مسیر/باکس/عملیات اختیاری است
           </DialogDescription>
         </DialogHeader>
 
@@ -860,8 +882,8 @@ function ConsumableUsageFormDialog({
               <Select
                 value={values.projectId || undefined}
                 onValueChange={(v) => {
-                  // تغییر پروژه، مسیر و باکس انتخاب‌شده را هم پاک می‌کند
-                  setValues((f) => ({ ...f, projectId: v === NONE ? '' : v, routeId: '', boxId: '' }))
+                  // تغییر پروژه، مسیر، باکس و عملیات انتخاب‌شده را هم پاک می‌کند
+                  setValues((f) => ({ ...f, projectId: v === NONE ? '' : v, routeId: '', boxId: '', operationId: '' }))
                 }}
               >
                 <SelectTrigger className="min-h-11 w-full" aria-label="انتخاب پروژه">
@@ -883,7 +905,7 @@ function ConsumableUsageFormDialog({
                 value={values.routeId || undefined}
                 disabled={!values.projectId}
                 onValueChange={(v) => {
-                  setValues((f) => ({ ...f, routeId: v === NONE ? '' : v, boxId: '' }))
+                  setValues((f) => ({ ...f, routeId: v === NONE ? '' : v, boxId: '', operationId: '' }))
                 }}
               >
                 <SelectTrigger className="min-h-11 w-full" aria-label="انتخاب مسیر">
@@ -905,7 +927,10 @@ function ConsumableUsageFormDialog({
             <Select
               value={values.boxId || undefined}
               disabled={!values.projectId}
-              onValueChange={(v) => setField('boxId', v === NONE ? '' : v)}
+              onValueChange={(v) => {
+                // تغییر باکس، عملیات انتخاب‌شده را هم پاک می‌کند
+                setValues((f) => ({ ...f, boxId: v === NONE ? '' : v, operationId: '' }))
+              }}
             >
               <SelectTrigger className="min-h-11 w-full" aria-label="انتخاب باکس">
                 <SelectValue placeholder="بدون باکس" />
@@ -916,6 +941,29 @@ function ConsumableUsageFormDialog({
                   <SelectItem key={b.id} value={b.id}>
                     باکس {toFa(b.number)}
                     {b.location ? ` — ${b.location}` : ''}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </Field>
+
+          <Field
+            label="عملیات (اختیاری)"
+            hint={values.projectId ? 'مصرف به این عملیات گره می‌خورد (مثلاً آماده‌سازی باکس/کابل)' : 'برای انتخاب عملیات ابتدا پروژه را انتخاب کنید'}
+          >
+            <Select
+              value={values.operationId || undefined}
+              disabled={!values.projectId}
+              onValueChange={(v) => setField('operationId', v === NONE ? '' : v)}
+            >
+              <SelectTrigger className="min-h-11 w-full" aria-label="انتخاب عملیات">
+                <SelectValue placeholder="بدون عملیات" />
+              </SelectTrigger>
+              <SelectContent dir="rtl">
+                <SelectItem value={NONE}>— بدون عملیات —</SelectItem>
+                {formOperations.map((o) => (
+                  <SelectItem key={o.id} value={o.id}>
+                    {`${o.title} (${operationTypeLabels[o.type]})`}
                   </SelectItem>
                 ))}
               </SelectContent>

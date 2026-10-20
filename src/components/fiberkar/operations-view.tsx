@@ -12,6 +12,7 @@ import {
   FolderKanban,
   Loader2,
   MoreVertical,
+  Package,
   Pencil,
   Plus,
   Route as RouteIcon,
@@ -45,11 +46,19 @@ import {
   db,
   deleteOperationCascade,
   profileSnapshot,
+  replaceOperationConsumables,
   updateOperation,
+  type OperationConsumableRow,
   type OperationInput,
 } from '@/lib/localdb'
-import { messages, operationStatusLabels, operationStatusVariants, operationTypeLabels } from '@/lib/labels'
-import { formatJalali, toFa, todayISO } from '@/lib/persian'
+import {
+  consumableUnitLabels,
+  messages,
+  operationStatusLabels,
+  operationStatusVariants,
+  operationTypeLabels,
+} from '@/lib/labels'
+import { adaptiveNum, formatJalali, parseNumberInput, toFa, todayISO } from '@/lib/persian'
 import type { Box, Operation, OperationStatus, OperationType, PhotoCategory, Project, Route } from '@/lib/types'
 import { useAppStore } from '@/store/app-store'
 import { PhotoGallery } from './photo-gallery'
@@ -106,6 +115,12 @@ interface OperationErrors {
   date?: string
   projectId?: string
   customTypeLabel?: string
+}
+
+/** ردیف مواد مصرفی در فرم عملیات (قلم + مقدار) — v1.3.1 */
+interface ConsumeRow {
+  itemId: string | undefined
+  qty: string
 }
 
 function emptyForm(projectId?: string, routeId?: string, boxId?: string): OperationForm {
@@ -202,6 +217,9 @@ export default function OperationsView() {
   const [busy, setBusy] = React.useState(false)
   // بنر موفقیت در حالت ایجاد (دیالوگ باز می‌ماند تا عکس با شناسه واقعی پیوست شود)
   const [created, setCreated] = React.useState(false)
+  // مواد مصرف‌شده در این عملیات — ثبت مستقیم در لوازم مصرفی (v1.3.1)
+  const [consumeRows, setConsumeRows] = React.useState<ConsumeRow[]>([])
+  const consumableItems = useLiveQuery(() => db.consumableItems.orderBy('name').toArray(), [])
 
   // ---------- حذف ----------
   const [deleteTarget, setDeleteTarget] = React.useState<Operation | null>(null)
@@ -250,6 +268,7 @@ export default function OperationsView() {
     setEditingId(null)
     setErrors({})
     setCreated(false)
+    setConsumeRows([])
     setDialogOpen(true)
   }
 
@@ -272,7 +291,17 @@ export default function OperationsView() {
     setEditingId(op.id)
     setErrors({})
     setCreated(false)
+    setConsumeRows([])
     setDialogOpen(true)
+    // بارگیری مواد مصرفی ثبت‌شدهٔ این عملیات (خارج از مسیر رندر؛ خطا نادیده)
+    void db.consumableUsages
+      .where('operationId')
+      .equals(op.id)
+      .toArray()
+      .then((rows) => {
+        setConsumeRows(rows.map((u) => ({ itemId: u.itemId, qty: adaptiveNum(u.quantity) })))
+      })
+      .catch(() => {})
   }
 
   function handleDialogChange(open: boolean) {
@@ -301,6 +330,19 @@ export default function OperationsView() {
     })
   }
 
+  // ---------- ردیف‌های مواد مصرفی ----------
+  function addConsumeRow() {
+    setConsumeRows((rows) => [...rows, { itemId: undefined, qty: '' }])
+  }
+
+  function updateConsumeRow(idx: number, patch: Partial<ConsumeRow>) {
+    setConsumeRows((rows) => rows.map((r, i) => (i === idx ? { ...r, ...patch } : r)))
+  }
+
+  function removeConsumeRow(idx: number) {
+    setConsumeRows((rows) => rows.filter((_, i) => i !== idx))
+  }
+
   function validate(): OperationErrors {
     const errs: OperationErrors = {}
     if (!form.title.trim()) errs.title = 'عنوان عملیات الزامی است'
@@ -318,6 +360,17 @@ export default function OperationsView() {
       return
     }
     if (!form.projectId) return
+    // اعتبارسنجی ردیف‌های مواد مصرفی — ردیف کامل نامعتبر خطا می‌دهد، ردیف کاملاً خالی نادیده
+    const validRows: OperationConsumableRow[] = []
+    for (const r of consumeRows) {
+      const q = r.qty.trim() ? parseNumberInput(r.qty) : undefined
+      if (!r.itemId && q === undefined) continue // ردیف خالی
+      if (!r.itemId || q === undefined || q <= 0) {
+        toast.error('برای مواد مصرف‌شده، قلم و مقدار معتبر (بیشتر از صفر) را وارد کنید یا ردیف را حذف کنید')
+        return
+      }
+      validRows.push({ itemId: r.itemId, quantity: q })
+    }
     setBusy(true)
     try {
       // اسنپ‌شات مسئول: اگر پروفایل موجود باشد از وضعیت فعلی؛ در غیر این صورت اسنپ‌شات قبلی حفظ می‌شود
@@ -357,6 +410,11 @@ export default function OperationsView() {
 
       if (editingId) {
         await updateOperation(editingId, input)
+        // همگام‌سازی مواد مصرفی با ردیف‌های فرم (تاریخ/والدین از خود عملیات)
+        await replaceOperationConsumables(
+          { id: editingId, date: input.date, projectId: input.projectId, routeId: input.routeId, boxId: input.boxId },
+          validRows
+        )
         toast.success(messages.updated)
         setDialogOpen(false)
       } else {
@@ -365,6 +423,13 @@ export default function OperationsView() {
         setEditingId(rec.id)
         setErrors({})
         setCreated(true)
+        // مواد مصرفی برای عملیات تازه‌ساخته‌شده هم ثبت می‌شود
+        if (validRows.length > 0) {
+          await replaceOperationConsumables(
+            { id: rec.id, date: input.date, projectId: input.projectId, routeId: input.routeId, boxId: input.boxId },
+            validRows
+          )
+        }
         toast.success(messages.saved)
       }
     } catch {
@@ -700,6 +765,75 @@ export default function OperationsView() {
               </Select>
             </Field>
 
+            {/* مواد مصرف‌شده — ثبت مستقیم در لوازم مصرفی (v1.3.1) */}
+            <section aria-label="مواد مصرف‌شده" className="flex flex-col gap-3 rounded-xl border bg-muted/30 p-3">
+              <div className="flex items-start justify-between gap-2">
+                <div className="min-w-0">
+                  <div className="flex items-center gap-1.5 text-sm font-semibold">
+                    <Package className="size-4 shrink-0" />
+                    مواد مصرف‌شده (اختیاری)
+                  </div>
+                  <p className="mt-0.5 text-xs leading-5 text-muted-foreground">
+                    اقلام مصرفی این عملیات (مثل آماده‌سازی باکس/کابل) به‌طور خودکار در بخش «لوازم مصرفی» و گزارش PDF ثبت می‌شود.
+                  </p>
+                </div>
+                <Button type="button" variant="outline" size="sm" className="min-h-9 shrink-0" onClick={addConsumeRow}>
+                  <Plus className="size-4" />
+                  افزودن قلم
+                </Button>
+              </div>
+              {consumeRows.length === 0 ? (
+                <p className="text-xs text-muted-foreground">موردی اضافه نشده است.</p>
+              ) : (
+                <div className="flex flex-col gap-2">
+                  {consumeRows.map((row, idx) => (
+                    <div
+                      key={idx}
+                      className="flex flex-col gap-2 rounded-lg border bg-background p-2 sm:flex-row sm:items-center"
+                    >
+                      <Select
+                        value={row.itemId ?? NONE}
+                        onValueChange={(v) => updateConsumeRow(idx, { itemId: v === NONE ? undefined : v })}
+                      >
+                        <SelectTrigger className="min-h-11 w-full flex-1" aria-label={`قلم ردیف ${toFa(idx + 1)}`}>
+                          <SelectValue placeholder="انتخاب قلم از کاتالوگ" />
+                        </SelectTrigger>
+                        <SelectContent dir="rtl">
+                          <SelectItem value={NONE}>— انتخاب قلم —</SelectItem>
+                          {(consumableItems ?? []).map((it) => (
+                            <SelectItem key={it.id} value={it.id}>
+                              {`${it.name} (${consumableUnitLabels[it.unit]})`}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      <div className="flex items-center gap-2">
+                        <Input
+                          value={row.qty}
+                          onChange={(e) => updateConsumeRow(idx, { qty: e.target.value })}
+                          inputMode="decimal"
+                          dir="ltr"
+                          placeholder="مقدار"
+                          className="min-h-11 flex-1 sm:w-28 sm:flex-none"
+                          aria-label={`مقدار ردیف ${toFa(idx + 1)}`}
+                        />
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon"
+                          className="size-11 shrink-0 text-destructive hover:text-destructive"
+                          onClick={() => removeConsumeRow(idx)}
+                          aria-label={`حذف ردیف ${toFa(idx + 1)}`}
+                        >
+                          <Trash2 className="size-4" />
+                        </Button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </section>
+
             <Field label="توضیحات">
               <Textarea
                 value={form.description}
@@ -793,6 +927,20 @@ function OperationCard({
   const project = op.projectId ? projectMap.get(op.projectId) : undefined
   const route = op.routeId ? routeMap.get(op.routeId) : undefined
   const box = op.boxId ? boxMap.get(op.boxId) : undefined
+  // خلاصهٔ مواد مصرفی ثبت‌شدهٔ این عملیات (v1.3.1)
+  const consumeSummary = useLiveQuery(async () => {
+    const rows = await db.consumableUsages.where('operationId').equals(op.id).toArray()
+    if (rows.length === 0) return undefined
+    const items = await db.consumableItems.toArray()
+    const byId = new Map(items.map((i) => [i.id, i]))
+    return rows
+      .map((u) => {
+        const it = byId.get(u.itemId)
+        const unit = it ? ` ${consumableUnitLabels[it.unit]}` : ''
+        return `${it ? it.name : 'قلم حذف‌شده'} ${adaptiveNum(u.quantity)}${unit}`
+      })
+      .join(' • ')
+  }, [op.id])
 
   return (
     <ItemCard
@@ -806,12 +954,20 @@ function OperationCard({
         </>
       }
       subtitle={
-        op.assigneeName ? (
-          <span className="flex items-center gap-1">
-            <UserRound className="size-3.5 shrink-0" />
-            {`مسئول: ${op.assigneeName}${op.assigneeRole ? ` (${op.assigneeRole})` : ''}`}
-          </span>
-        ) : undefined
+        <>
+          {op.assigneeName ? (
+            <span className="flex items-center gap-1">
+              <UserRound className="size-3.5 shrink-0" />
+              {`مسئول: ${op.assigneeName}${op.assigneeRole ? ` (${op.assigneeRole})` : ''}`}
+            </span>
+          ) : undefined}
+          {consumeSummary && (
+            <span className="flex items-start gap-1 text-xs text-muted-foreground">
+              <Package className="mt-0.5 size-3.5 shrink-0" />
+              {`مواد مصرف‌شده: ${consumeSummary}`}
+            </span>
+          )}
+        </>
       }
       meta={
         <>
